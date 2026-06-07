@@ -44,6 +44,62 @@ When Warpbox detects a request for a byte range deep within the file (indicating
 * **Configuration:** Exclusively managed via a declarative `config.yml`
 * **Dependencies:** Minimal footprint; relies primarily on standard Go libraries (`net/http`, `log/slog`).
 
+## Recommended rclone Configuration
+
+Mount Warpbox as a local filesystem using rclone's WebDAV backend. Below are the recommended flags for optimal performance and stability.
+
+### Basic mount command
+
+```
+rclone mount warpbox: /mnt/warpbox \
+  --webdav-url http://localhost:8080/webdav/ \
+  --webdav-vendor other \
+  --daemon
+```
+
+### Performance flags
+
+| Flag | Recommended Value | Why |
+|---|---|---|
+| `--buffer-size` | `16M` | Matches Warpbox's default chunk_size_mb. Larger values cause double-buffering. |
+| `--vfs-cache-mode` | `writes` or `full` | Warpbox handles read caching internally. VFS write cache prevents re-fetching on partial writes. `full` adds local file cache for frequently accessed files. |
+| `--vfs-read-ahead` | `0` (disabled) | Warpbox already does JIT read-ahead. rclone pre-fetching would cause unnecessary API calls. |
+| `--vfs-cache-max-age` | `30s` | Aligns with Warpbox's default cache TTL. Keeps rclone's local cache in sync with Warpbox's in-memory chunks. |
+| `--transfers` | `2` | Keeps concurrent transfers low to avoid overwhelming the throttle queue. |
+| `--checkers` | `4` | Warpbox serves PROPFIND from SQLite (near-instant), so many checkers are safe. |
+| `--no-checksum` | (use flag) | Prevents rclone from reading every file to compute checksums, which would trigger CDN URL requests. |
+| `--vfs-read-wait` | `100ms` | Time for Warpbox to fetch a CDN URL and begin streaming before rclone retries. |
+
+### Stability flags
+
+| Flag | Recommended Value | Why |
+|---|---|---|
+| `--timeout` | `60s` | Warpbox's throttle can delay requests by up to 250ms per call under load. |
+| `--contimeout` | `30s` | Connection timeout for initial WebDAV handshake. |
+| `--low-level-retries` | `3` | Warpbox's CDN proxy may transiently fail; rclone should retry. |
+| `--max-stats-groups` | `0` | Disable stats groups to reduce background PROPFIND calls. |
+
+### Example full command
+
+```
+rclone mount warpbox: /mnt/warpbox \
+  --webdav-url http://localhost:8080/webdav/ \
+  --webdav-vendor other \
+  --buffer-size 16M \
+  --vfs-cache-mode writes \
+  --vfs-read-ahead 0 \
+  --vfs-cache-max-age 30s \
+  --transfers 2 \
+  --checkers 4 \
+  --no-checksum \
+  --vfs-read-wait 100ms \
+  --timeout 60s \
+  --contimeout 30s \
+  --low-level-retries 3 \
+  --max-stats-groups 0 \
+  --daemon
+```
+
 ## Status
 
-Active Development / Concept Phase.
+Active Development. Core WebDAV handlers (PROPFIND, GET with byte-range), CDN URL caching, metadata sync, and rate-limited throttle are implemented.
