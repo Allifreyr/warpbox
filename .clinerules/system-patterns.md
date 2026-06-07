@@ -2,7 +2,11 @@
 
 ## 1. Core Architecture
 
-Warpbox operates as an intercepting WebDAV proxy. It acts as a shield between aggressive local media servers (Plex) and strict cloud APIs (TorBox). The primary pattern is **decoupling filesystem speed from network speed**.
+Warpbox operates as an intercepting WebDAV proxy, designed to be consumed by rclone's WebDAV backend. It acts as a shield between aggressive local media servers (accessed via rclone) and strict cloud APIs (TorBox). The primary pattern is **decoupling filesystem speed from network speed**.
+
+```
+Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
+```
 
 ## 2. Configuration Management
 
