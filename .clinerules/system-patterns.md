@@ -23,3 +23,7 @@ Warpbox operates as an intercepting WebDAV proxy. It acts as a shield between ag
 ## 5. Network & Rate Limiting
 
 * **Never fail fast with HTTP 429s to the media server.** \* Implement blocking queues and internal throttling to manage massive concurrent read requests. The proxy must absorb burst traffic from Plex and drip-feed it to the TorBox API strictly below the 300 requests/minute limit.
+
+## 6. Decision Tracking
+
+* Always consult decision-log.md before implementing complex logic to avoid repeating failed experiments. Whenever a significant architectural decision is made, a workaround is implemented, or an approach fails, you must immediately document the context, decision, and rationale in decision-log.md.
