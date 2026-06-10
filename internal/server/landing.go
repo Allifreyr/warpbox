@@ -59,6 +59,8 @@ type LandingData struct {
 	SyncIntervalMinutes  int
 	LogFormat            string
 	LogLevel             string
+	APICallsTotal        int64
+	APICallsLastMinute   int
 }
 
 // handleLanding serves the Warpbox branded landing page with runtime stats.
@@ -81,6 +83,9 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		slog.Error("landing: CountFiles failed", "error", err)
 		fileCount = -1
 	}
+
+	// Throttle stats.
+	throttleStats := s.queue.Stats()
 
 	data := LandingData{
 		Version:             s.cfg.Version,
@@ -105,6 +110,8 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		SyncIntervalMinutes: s.cfg.SyncIntervalMinute,
 		LogFormat:           s.cfg.LogFormat,
 		LogLevel:            s.cfg.LogLevel,
+		APICallsTotal:       throttleStats.TotalCalls,
+		APICallsLastMinute:  throttleStats.CallsLastMinute,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -155,7 +155,9 @@
 
   <table>
     <tr><th colspan="2">Throttle</th></tr>
-    <tr><td>Requests per minute</td><td>{{.RequestsPerMinute}}</td></tr>
+    <tr><td>Rate limit</td><td>{{.RequestsPerMinute}} req/min</td></tr>
+    <tr><td>Total API calls</td><td>{{.APICallsTotal}}</td></tr>
+    <tr><td>Calls last minute</td><td>{{.APICallsLastMinute}}</td></tr>
   </table>
 
   <table>
