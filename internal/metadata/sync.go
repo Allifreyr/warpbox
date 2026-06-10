@@ -195,6 +195,7 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 				Path:      virtualPath,
 				Size:      f.Size,
 				MimeType:  f.MimeType,
+				CreatedAt: t.CreatedAt,
 			}
 			if err := w.store.UpsertFile(rec); err != nil {
 				slog.Error("metadata sync: upsert failed",

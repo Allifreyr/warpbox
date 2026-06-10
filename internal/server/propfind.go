@@ -14,6 +14,19 @@ import (
 	"time"
 )
 
+// formatLastModified parses an ISO 8601 timestamp (like TorBox API's created_at)
+// and returns an RFC 1123-formatted string suitable for WebDAV getlastmodified.
+// If the input is empty or unparseable, it returns the current time.
+func formatLastModified(createdAt string) string {
+	if createdAt != "" {
+		t, err := time.Parse("2006-01-02T15:04:05", createdAt[:19])
+		if err == nil {
+			return t.UTC().Format(http.TimeFormat)
+		}
+	}
+	return time.Now().UTC().Format(http.TimeFormat)
+}
+
 const davNamespace = "DAV:"
 
 type multiStatus struct {
@@ -86,7 +99,7 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasSuffix(dirHref, "/") {
 		dirHref += "/"
 	}
-	responses = appendResponse(responses, dirHref, true, 0, "", "", &seen)
+	responses = appendResponse(responses, dirHref, true, 0, "", "", "", &seen)
 
 	// Add immediate children based on depth.
 	if depth == "1" || depth == "infinity" {
@@ -95,10 +108,11 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 		// If there are more segments after that, the immediate child is a directory.
 		// If the file is directly in the requested directory, it's a file.
 		type childInfo struct {
-			isDir bool
-			size  int64
-			name  string
-			mime  string
+			isDir     bool
+			size      int64
+			name      string
+			mime      string
+			createdAt string
 		}
 		immediate := map[string]childInfo{}
 
@@ -123,10 +137,11 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 					mime = "application/octet-stream"
 				}
 				immediate[immediateName] = childInfo{
-					isDir: false,
-					size:  rec.Size,
-					name:  rec.Name,
-					mime:  mime,
+					isDir:     false,
+					size:      rec.Size,
+					name:      rec.Name,
+					mime:      mime,
+					createdAt: rec.CreatedAt,
 				}
 			}
 		}
@@ -137,9 +152,9 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 			childHref := baseHref + name
 			if info.isDir {
 				childHref += "/"
-				responses = appendResponse(responses, childHref, true, 0, "", "", &seen)
+				responses = appendResponse(responses, childHref, true, 0, "", "", "", &seen)
 			} else {
-				responses = appendResponse(responses, childHref, false, info.size, info.name, info.mime, &seen)
+				responses = appendResponse(responses, childHref, false, info.size, info.name, info.mime, info.createdAt, &seen)
 			}
 		}
 	}
@@ -167,7 +182,7 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 }
 
 // appendResponse creates a WebDAV response entry and appends it to the slice.
-func appendResponse(responses []response, href string, isDir bool, size int64, name, mimeType string, seen *map[string]bool) []response {
+func appendResponse(responses []response, href string, isDir bool, size int64, name, mimeType, createdAt string, seen *map[string]bool) []response {
 	if (*seen)[href] {
 		return responses
 	}
@@ -184,7 +199,7 @@ func appendResponse(responses []response, href string, isDir bool, size int64, n
 			DisplayName:   name,
 			ContentLength: size,
 			ContentType:   mimeType,
-			LastModified:  time.Now().UTC().Format(http.TimeFormat),
+			LastModified:  formatLastModified(createdAt),
 		}
 	}
 
