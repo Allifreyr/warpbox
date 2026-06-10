@@ -50,6 +50,18 @@
   - The SDK's `RequestDownloadLinkRequestParams` confirms the token is a query param.
   - The permalink URL pattern documented by TorBox also uses query param: `https://api.torbox.app/v1/api/torrents/requestdl?token=APIKEY&torrent_id=NUMBER&file_id=NUMBER&redirect=true`.
 
+## D-006: Use Gitea Issues instead of active-context.md for work tracking
+
+- **Date:** 2026-06-10
+- **Context:** The project's `.clinerules/active-context.md` was being manually updated to track progress but quickly became stale as development accelerated.
+- **Decision:** Delete `active-context.md` and rely entirely on Gitea Issues for feature/bug/priority tracking.
+- **Rationale:**
+  - Gitea Issues provide structured labels (`bug`, `enhancement`, `infra`), priorities (`priority:high`, `priority:low`), milestones, and comments — none of which a Markdown file can offer.
+  - Commit messages use `closes #N` to auto-close issues, keeping the trail of what was done and why in the issue itself.
+  - The AI assistant reads issues via the `gitea-mcp` server, making the issue tracker directly actionable.
+  - A single `active-context.md` duplicated the issue tracker and was never the authoritative source of truth.
+- **Outcome:** Work tracking lives in Gitea Issues. The decision log remains only for non-obvious architectural/technical choices.
+
 ## D-005: CGO dependency via mattn/go-sqlite3
 
 - **Date:** 2026-06-07
