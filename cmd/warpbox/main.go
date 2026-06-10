@@ -131,10 +131,18 @@ func main() {
 	// --- WebDAV server ---
 	srv := server.New(
 		server.Config{
-			ListenAddr:    cfg.Server.ListenAddr,
-			WebDAVRoot:    cfg.Server.WebDAVRoot,
-			CDNTtlMinutes: cfg.Cache.CDNURLTTLMinutes,
-			Version:       Version,
+			ListenAddr:         cfg.Server.ListenAddr,
+			WebDAVRoot:         cfg.Server.WebDAVRoot,
+			CDNTtlMinutes:      cfg.Cache.CDNURLTTLMinutes,
+			Version:            Version,
+			MaxRAMMB:           cfg.Cache.MaxRAMMB,
+			ChunkSizeMB:        cfg.Cache.ChunkSizeMB,
+			TTLSeconds:         cfg.Cache.TTLSeconds,
+			EvictionStrategy:   cfg.Cache.EvictionStrategy,
+			RequestsPerMinute:  cfg.Throttle.RequestsPerMinute,
+			LogFormat:          cfg.Logging.Format,
+			LogLevel:           cfg.Logging.Level,
+			SyncIntervalMinute: cfg.Sync.IntervalMinutes,
 		},
 		metadataStore,
 		ramCache,

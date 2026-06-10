@@ -9,6 +9,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/ben/warpbox/internal/cache"
 	"github.com/ben/warpbox/internal/metadata"
@@ -18,33 +19,43 @@ import (
 
 // Server is the Warpbox WebDAV server.
 type Server struct {
-	cfg     Config
-	store   *metadata.Store
-	cache   *cache.Buffer
-	torBox  *torbox.Client
-	queue   *throttle.Queue
-	root    string
-	mux     *http.ServeMux
+	cfg       Config
+	store     *metadata.Store
+	cache     *cache.Buffer
+	torBox    *torbox.Client
+	queue     *throttle.Queue
+	root      string
+	mux       *http.ServeMux
+	startTime time.Time
 }
 
 // Config holds the server-specific configuration.
 type Config struct {
-	ListenAddr    string
-	WebDAVRoot    string
-	CDNTtlMinutes int    // How long to cache CDN URLs (0 = disable)
-	Version       string // Build version, injected at compile time
+	ListenAddr         string
+	WebDAVRoot         string
+	CDNTtlMinutes      int    // How long to cache CDN URLs (0 = disable)
+	Version            string // Build version, injected at compile time
+	MaxRAMMB           int    // For landing page display
+	ChunkSizeMB        int    // For landing page display
+	TTLSeconds         int    // For landing page display
+	EvictionStrategy   string // For landing page display
+	RequestsPerMinute  int    // For landing page display
+	LogFormat          string // For landing page display
+	LogLevel           string // For landing page display
+	SyncIntervalMinute int    // For landing page display
 }
 
 // New creates a new WebDAV server.
 func New(cfg Config, store *metadata.Store, cache *cache.Buffer, torBox *torbox.Client, queue *throttle.Queue) *Server {
 	s := &Server{
-		cfg:    cfg,
-		store:  store,
-		cache:  cache,
-		torBox: torBox,
-		queue:  queue,
-		root:   cfg.WebDAVRoot,
-		mux:    http.NewServeMux(),
+		cfg:       cfg,
+		store:     store,
+		cache:     cache,
+		torBox:    torBox,
+		queue:     queue,
+		root:      cfg.WebDAVRoot,
+		mux:       http.NewServeMux(),
+		startTime: time.Now(),
 	}
 	s.registerRoutes()
 	return s

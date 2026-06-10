@@ -205,6 +205,16 @@ func (s *Store) GetCDNURL(internalID int64) (string, error) {
 	return url, nil
 }
 
+// CountFiles returns the total number of file records in the store.
+func (s *Store) CountFiles() (int, error) {
+	row := s.db.QueryRow(`SELECT COUNT(*) FROM files`)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, fmt.Errorf("counting files: %w", err)
+	}
+	return count, nil
+}
+
 // GetTorrentIDByFileID returns the torrent_id for a given file_id.
 // This is needed because TorBox's requestdl endpoint requires both.
 func (s *Store) GetTorrentIDByFileID(fileID int64) (int64, error) {
