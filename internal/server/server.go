@@ -89,6 +89,9 @@ func (s *Server) registerRoutes() {
 	s.mux.Handle("/logs/", s.versionHeader(http.HandlerFunc(s.handleLogs)))
 	s.mux.Handle("/logs", s.versionHeader(http.HandlerFunc(s.handleLogs)))
 
+	// Action endpoints (POST-only).
+	s.mux.Handle("/actions/", s.versionHeader(http.HandlerFunc(s.handleActions)))
+
 	s.mux.Handle("/", s.versionHeader(http.HandlerFunc(s.handleLanding)))
 	s.mux.HandleFunc("/warpbox.png", s.handleLogo)
 	s.mux.HandleFunc("/favicon.ico", s.handleLogo)

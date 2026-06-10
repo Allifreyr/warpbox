@@ -141,6 +141,20 @@ func main() {
 	)
 	go syncWorker.Start(ctx)
 
+	// --- Action callbacks ---
+	server.SetActions(
+		// Resync: triggers an immediate metadata sync.
+		func() error {
+			syncWorker.SyncNow()
+			return nil
+		},
+		// Clear cache: evicts all RAM cached chunks.
+		func() error {
+			ramCache.Clear()
+			return nil
+		},
+	)
+
 	// --- WebDAV server ---
 	srv := server.New(
 		server.Config{

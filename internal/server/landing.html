@@ -79,6 +79,22 @@
   .link-row a:hover {
     text-decoration: underline;
   }
+  .actions td { text-align: center; padding: 1rem; }
+  .btn {
+    background: #1e293b;
+    color: #38bdf8;
+    border: 1px solid #334155;
+    padding: 0.5rem 1.2rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin: 0.25rem;
+  }
+  .btn:hover {
+    background: #334155;
+    border-color: #38bdf8;
+  }
   .footer {
     text-align: center;
     margin-top: 2rem;
@@ -151,6 +167,20 @@
     <tr><th colspan="2">Logging</th></tr>
     <tr><td>Format</td><td>{{.LogFormat}}</td></tr>
     <tr><td>Level</td><td>{{.LogLevel}}</td></tr>
+  </table>
+
+  <table>
+    <tr><th colspan="2">Actions</th></tr>
+    <tr class="actions">
+      <td colspan="2">
+        <form method="post" action="/actions/resync" style="display:inline">
+          <input type="submit" value="Resync metadata" class="btn" />
+        </form>
+        <form method="post" action="/actions/clearcache" style="display:inline">
+          <input type="submit" value="Clear RAM cache" class="btn" />
+        </form>
+      </td>
+    </tr>
   </table>
 
   <div class="footer">

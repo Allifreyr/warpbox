@@ -55,6 +55,13 @@ func (w *SyncWorker) Start(ctx context.Context) {
 	}
 }
 
+// SyncNow triggers an immediate out-of-cycle sync using a fresh background context.
+func (w *SyncWorker) SyncNow() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	w.syncOnce(ctx)
+}
+
 // syncOnce performs a single sync cycle through the throttle queue.
 func (w *SyncWorker) syncOnce(ctx context.Context) {
 	slog.Debug("metadata sync: starting")

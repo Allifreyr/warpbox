@@ -174,6 +174,14 @@ func (b *Buffer) evictionLoop() {
 	}
 }
 
+// Clear removes all cached entries from the buffer.
+func (b *Buffer) Clear() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.entries = make(map[string]*Chunk)
+	b.usedRAM = 0
+}
+
 // Stats returns current cache statistics.
 func (b *Buffer) Stats() (entries, usedRAM, maxRAM int) {
 	b.mu.RLock()
