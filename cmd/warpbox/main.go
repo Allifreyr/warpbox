@@ -70,6 +70,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	fmt.Print(banner)
+	fmt.Printf("\nwarpbox %s — WebDAV proxy for TorBox\n\n", Version)
 
 	slog.Info("starting warpbox",
 		"version", Version,
