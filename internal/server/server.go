@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	_ "net/http/pprof"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -50,14 +51,28 @@ type Server struct {
 	syncStatus SyncStatusFunc
 
 	// Negative cache: key = "torrentID:fileID", value = error + expiry.
-	// Protects against Plex's tight retry loop burning API quota on known-bad files.
 	negativeCache   map[string]*negativeCacheEntry
 	negativeCacheMu sync.Mutex
 
 	// Circuit breaker: per-torrent failure tracking.
-	// Marked stale after maxTorrentFailures in the sliding window.
 	torrentFailures   map[int64]*torrentFailureTracker
 	torrentFailuresMu sync.Mutex
+
+	// CDN connection semaphore: limits concurrent proxy connections to TorBox CDN.
+	cdnSem chan struct{}
+
+	// Stop channel for periodic cleanup goroutines.
+	cleanupStopCh chan struct{}
+
+	// Configurable map size limits.
+	negativeCacheMaxEntries  int
+	circuitBreakerMaxEntries int
+
+	// Min chunk bytes to cache (tiny chunks skip cache).
+	minChunkBytes int
+
+	// Path to config file for runtime log level toggle.
+	configPath string
 }
 
 // Config holds the server-specific configuration.
@@ -65,9 +80,9 @@ type Config struct {
 	ListenAddr         string
 	WebDAVRoot         string
 	CDNTtlMinutes       int  // How long to cache CDN URLs (0 = disable)
-	CDNURLAutoRepair    bool // Auto-repair stale CDN URLs by re-fetching from TorBox
-	CDNURLRepairRetries int  // Max repair retries per request (0 = no retries)
-	Version            string // Build version, injected at compile time
+	CDNURLAutoRepair    bool // Auto-repair stale CDN URLs
+	CDNURLRepairRetries int  // Max repair retries per request
+	Version            string // Build version
 	MaxRAMMB           int    // For landing page display
 	ChunkSizeMB        int    // For landing page display
 	TTLSeconds         int    // For landing page display
@@ -88,25 +103,209 @@ type Config struct {
 	CircuitBreakerFailures  int // Max failures in window; default 5
 	CircuitBreakerWindowSec int // Sliding window seconds; default 60
 	CircuitBreakerStaleMin  int // Stale duration minutes; default 5
+
+	// Memory management settings.
+	NegativeCacheMaxEntries  int // Max entries in negative cache; default 5000
+	CircuitBreakerMaxEntries int // Max entries in circuit breaker; default 2000
+	CleanupIntervalSeconds   int // How often to sweep expired entries; default 60
+
+	// CDN proxy settings.
+	MinChunkBytes     int // Skip caching chunks smaller than this; default 16384
+	MaxCDNConnections int // Max concurrent CDN proxy connections; default 4
+
+	// Path to config file for runtime log level toggle.
+	ConfigPath string
+
+	// LevelVar for atomic runtime log level switching. Shared with main.go's
+	// slog.HandlerOptions.Level so a Set() call takes effect immediately.
+	// Must be set by main.go after New() returns.
+	LevelVar *slog.LevelVar
 }
 
 // New creates a new WebDAV server.
-func New(cfg Config, store *metadata.Store, cache *cache.Buffer, torBox *torbox.Client, queue *throttle.Queue) *Server {
+func New(cfg Config, store *metadata.Store, c *cache.Buffer, torBox *torbox.Client, queue *throttle.Queue) *Server {
+	maxConns := cfg.MaxCDNConnections
+	if maxConns < 1 {
+		maxConns = 4
+	}
+
 	s := &Server{
 		cfg:       cfg,
 		store:     store,
-		cache:     cache,
+		cache:     c,
 		torBox:    torBox,
 		queue:     queue,
 		root:      cfg.WebDAVRoot,
 		mux:       http.NewServeMux(),
 		startTime: time.Now(),
 
-		negativeCache:   make(map[string]*negativeCacheEntry),
-		torrentFailures: make(map[int64]*torrentFailureTracker),
+		negativeCache:          make(map[string]*negativeCacheEntry),
+		torrentFailures:        make(map[int64]*torrentFailureTracker),
+		cleanupStopCh:          make(chan struct{}),
+		cdnSem:                 make(chan struct{}, maxConns),
+		negativeCacheMaxEntries:  cfg.NegativeCacheMaxEntries,
+		circuitBreakerMaxEntries: cfg.CircuitBreakerMaxEntries,
+		minChunkBytes:          cfg.MinChunkBytes,
+		configPath:             cfg.ConfigPath,
+	}
+	// Fill the semaphore so we can Acquire/Release.
+	for i := 0; i < maxConns; i++ {
+		s.cdnSem <- struct{}{}
 	}
 	s.registerRoutes()
+	s.startCleanupLoop()
 	return s
+}
+
+// AcquireCDNConn blocks until a CDN connection slot is available.
+func (s *Server) AcquireCDNConn() {
+	<-s.cdnSem
+}
+
+// ReleaseCDNConn returns a CDN connection slot.
+func (s *Server) ReleaseCDNConn() {
+	s.cdnSem <- struct{}{}
+}
+
+// MinChunkBytes returns the minimum chunk size (in bytes) for caching.
+func (s *Server) MinChunkBytes() int {
+	return s.minChunkBytes
+}
+
+// ConfigPath returns the path to the config file for runtime log level toggle.
+func (s *Server) ConfigPath() string {
+	return s.configPath
+}
+
+// startCleanupLoop runs a periodic background goroutine that sweeps expired
+// entries from the negative cache and circuit breaker maps.
+func (s *Server) startCleanupLoop() {
+	interval := time.Duration(s.cfg.CleanupIntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 60 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.sweepNegativeCache()
+				s.sweepCircuitBreaker()
+			case <-s.cleanupStopCh:
+				return
+			}
+		}
+	}()
+}
+
+// StopCleanup stops the periodic cleanup goroutine. Intended for tests.
+func (s *Server) StopCleanup() {
+	close(s.cleanupStopCh)
+}
+
+// sweepNegativeCache removes expired entries. If the map exceeds
+// maxNegativeCacheEntries, the oldest entries are also evicted.
+func (s *Server) sweepNegativeCache() {
+	s.negativeCacheMu.Lock()
+	defer s.negativeCacheMu.Unlock()
+
+	now := time.Now()
+	for k, v := range s.negativeCache {
+		if now.After(v.expiresAt) {
+			delete(s.negativeCache, k)
+		}
+	}
+
+	if len(s.negativeCache) > s.negativeCacheMaxEntries {
+		over := len(s.negativeCache) - s.negativeCacheMaxEntries
+		type kv struct {
+			key       string
+			expiresAt time.Time
+		}
+		sorted := make([]kv, 0, len(s.negativeCache))
+		for k, v := range s.negativeCache {
+			sorted = append(sorted, kv{key: k, expiresAt: v.expiresAt})
+		}
+		for i := 0; i < len(sorted) && i < over; i++ {
+			oldest := i
+			for j := i + 1; j < len(sorted); j++ {
+				if sorted[j].expiresAt.Before(sorted[oldest].expiresAt) {
+					oldest = j
+				}
+			}
+			sorted[i], sorted[oldest] = sorted[oldest], sorted[i]
+		}
+		for i := 0; i < over; i++ {
+			delete(s.negativeCache, sorted[i].key)
+		}
+		slog.Debug("swept negative cache",
+			"remaining", len(s.negativeCache),
+			"evicted", over,
+			"max", s.negativeCacheMaxEntries,
+		)
+	}
+}
+
+// sweepCircuitBreaker removes trackers where the stale period has expired.
+func (s *Server) sweepCircuitBreaker() {
+	s.torrentFailuresMu.Lock()
+	defer s.torrentFailuresMu.Unlock()
+
+	now := time.Now()
+	for k, v := range s.torrentFailures {
+		if !v.staleUntil.IsZero() && now.After(v.staleUntil) {
+			delete(s.torrentFailures, k)
+		}
+	}
+
+	if len(s.torrentFailures) > s.circuitBreakerMaxEntries {
+		over := len(s.torrentFailures) - s.circuitBreakerMaxEntries
+		type kv struct {
+			key        int64
+			staleUntil time.Time
+		}
+		sorted := make([]kv, 0, len(s.torrentFailures))
+		for k, v := range s.torrentFailures {
+			sorted = append(sorted, kv{key: k, staleUntil: v.staleUntil})
+		}
+		for i := 0; i < len(sorted) && i < over; i++ {
+			oldest := i
+			for j := i + 1; j < len(sorted); j++ {
+				if sorted[j].staleUntil.Before(sorted[oldest].staleUntil) {
+					oldest = j
+				}
+			}
+			sorted[i], sorted[oldest] = sorted[oldest], sorted[i]
+		}
+		for i := 0; i < over; i++ {
+			delete(s.torrentFailures, sorted[i].key)
+		}
+		slog.Debug("swept circuit breaker",
+			"remaining", len(s.torrentFailures),
+			"evicted", over,
+			"max", s.circuitBreakerMaxEntries,
+		)
+	}
+}
+
+// CacheStats returns the buffer's current stats.
+func (s *Server) CacheStats() (entries, usedRAM, maxRAM int) {
+	return s.cache.Stats()
+}
+
+// NegativeCacheSize returns the current number of entries in the negative cache.
+func (s *Server) NegativeCacheSize() int {
+	s.negativeCacheMu.Lock()
+	defer s.negativeCacheMu.Unlock()
+	return len(s.negativeCache)
+}
+
+// CircuitBreakerSize returns the current number of entries in the circuit breaker.
+func (s *Server) CircuitBreakerSize() int {
+	s.torrentFailuresMu.Lock()
+	defer s.torrentFailuresMu.Unlock()
+	return len(s.torrentFailures)
 }
 
 // versionHeader returns an HTTP middleware that sets the Server header.
@@ -124,29 +323,31 @@ func (s *Server) registerRoutes() {
 	s.mux.Handle(s.root+"/", handler)
 	s.mux.Handle(s.root, handler)
 
-	// Human-browsable HTML directory listing at /http/
 	s.mux.Handle("/http/", s.versionHeader(http.HandlerFunc(s.handleHTTP)))
 	s.mux.Handle("/http", s.versionHeader(http.HandlerFunc(s.handleHTTP)))
 
-	// Infuse WebDAV endpoint (same content, different URL path).
 	s.mux.Handle("/infuse/", s.versionHeader(http.HandlerFunc(s.handleWebDAV)))
 	s.mux.Handle("/infuse", s.versionHeader(http.HandlerFunc(s.handleWebDAV)))
 
-	// Log viewer.
 	s.mux.Handle("/logs/", s.versionHeader(http.HandlerFunc(s.handleLogs)))
 	s.mux.Handle("/logs", s.versionHeader(http.HandlerFunc(s.handleLogs)))
 
-	// Action endpoints (POST-only).
 	s.mux.Handle("/actions/", s.versionHeader(http.HandlerFunc(s.handleActions)))
 
+	// pprof endpoints for runtime profiling (heap, goroutine, CPU, etc.)
+	s.mux.Handle("/debug/pprof/", s.versionHeader(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.DefaultServeMux.ServeHTTP(w, r)
+	})))
+	s.mux.Handle("/debug/pprof", s.versionHeader(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.DefaultServeMux.ServeHTTP(w, r)
+	})))
+
 	s.mux.Handle("/", s.versionHeader(http.HandlerFunc(s.handleLanding)))
-	s.mux.HandleFunc("/warpbox.png", s.handleLogo)
+	s.mux.HandleFunc("/warpbox.svg", s.handleLogo)
 	s.mux.HandleFunc("/favicon.ico", s.handleLogo)
 }
 
 // handleWebDAV dispatches WebDAV methods to the appropriate handler.
-// If the request comes via /infuse/, rewrite the path to the configured
-// WebDAV root so the sub-handlers work without modification.
 func (s *Server) handleWebDAV(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/infuse") {
 		r.URL.Path = strings.Replace(r.URL.Path, "/infuse", s.root, 1)
