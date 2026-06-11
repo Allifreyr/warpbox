@@ -60,22 +60,26 @@ Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
   board endpoints. Do NOT attempt to implement board operations via HTTP calls
   to the Gitea web UI — this has been attempted and failed repeatedly.
 * The `extea.exe` CLI tool (`C:\Users\user\Documents\Cline\MCP\extea\extea.exe`)
-  can manage board operations via web session auth, but **it requires an
-  interactive TTY**. Subprocess calls from the AI assistant hang indefinitely.
-  Board operations are therefore limited to the Gitea web UI.
-* Tea login config: `C:\Users\user\.config\tea\config.yml` (login: `cline`)
-* For reference, the extea commands (run manually in a real terminal) are:
+  manages board operations via web session auth. It requires an interactive TTY,
+  but the AI assistant can invoke it through `pwsh` (PowerShell 7) using
+  `execute_command` with `requires_approval: true`:
   ```
-  extea projects create --title "Name" --template kanban -r ben/warpbox -l cline
+  pwsh -noprofile -Command "$env:GITEA_PASSWORD='...'; & 'extea.exe' ..."
+  ```
+  Boards are no longer limited to the Gitea web UI.
+* Tea login config: `C:\Users\user\.config\tea\config.yml` (login: `cline`)
+* For reference, the extea commands (used via pwsh) are:
+  ```
   extea projects list -r ben/warpbox -l cline -o json
   extea projects view 1 -r ben/warpbox -l cline -o json
+  extea projects move 1 --column 3 --issue NUM -r ben/warpbox -l cline
   extea columns create --project 1 --title "Backlog" -r ben/warpbox -l cline
-  extea projects assign 5 --issue 1 -r ben/warpbox -l cline
-  extea projects move 5 --column 3 --issue 1 -r ben/warpbox -l cline
+  extea columns list --project 1 -r ben/warpbox -l cline -o json
+  extea projects assign 1 --issue NUM -r ben/warpbox -l cline
+  extea projects unassign --issue NUM -r ben/warpbox -l cline
   ```
 * Issue tracking relies solely on labels (`status:*` or type labels), milestone
-  assignment, and the Gitea Issue tracker. Column position on the Kanban board
-  is managed manually via the web UI.
+  assignment, and the Gitea Issue tracker.
 
 ## 9. Wiki Usage
 

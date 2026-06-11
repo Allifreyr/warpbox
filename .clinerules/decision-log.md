@@ -102,11 +102,11 @@
 - **Thresholds:** retries=3, backoff=[1s,2s,4s], 429 backoff=5s, negative-cache TTL=30s, circuit-breaker=[5 failures, 60s window, 5min stale]
 - **Issue:** #59
 
-## D-009: extea-as-subprocess rejected; project boards via CLI only
+## D-009: extea-as-subprocess rejected; Python web session also blocked
 
 - **Date:** 2026-06-11
 - **Context:** Gitea has no REST API for project boards. The CLI tool `extea` (a `tea` wrapper) was evaluated as a way to add kanban board operations to the `gitea-unified` MCP server.
-- **Decision:** Do not integrate extea into the MCP server. Boards are CLI-only.
+- **Decision:** Do not integrate extea into the MCP server. Boards are CLI-only, invoked via pwsh.
 - **Rationale:**
   - extea's web session auth was successfully reimplemented in Python (`BoardSession` class), and `projects_create` worked (created Board #1 in warpbox), but `columns_create` returned HTTP 500 regardless of CSRF method used.
   - Spawning extea.exe as a Python subprocess timed out despite correct env vars, stdin=DEVNULL, correct flag ordering, and existing tea config — extea appears to require a TTY for an unknown internal reason.
@@ -114,7 +114,8 @@
 - **Alternatives considered:**
   1. Direct HTTP web session (partially worked, column CRUD got 500)
   2. extea subprocess (extea hangs on stdin)
-- **Outcome:** Codified in the `.clinerules/` rules files. The project board still needs manual column assignment via the Gitea web UI (the Projects API is not exposed in Gitea 1.25.5).
+  3. ConPTY wrapper (Go and C) — failed due to ConPTY syscall complexity and output capture issues
+- **Resolution (D-012):** See D-012. pwsh + `execute_command` with foreground terminal works.
 
 ## D-010: Build-script approach for dev-deploy
 
@@ -132,3 +133,19 @@
 - **Decision:** The dev-deploy script uses `docker exec` to copy the new binary into the container's filesystem *before* `docker restart`. The overlay filesystem persists across restarts.
 - **Rationale:** Works with the current production image without rebuilding it. The entrypoint script is still valuable for future images (cleaner pattern), but `docker exec` is needed for backward compatibility.
 - **Outcome:** Step 5 of `dev-deploy script` now does `docker exec warpbox cp /data/warpbox-next /usr/local/bin/warpbox` followed by `docker restart warpbox`. Verified working.
+
+## D-012: extea via pwsh + execute_command
+
+- **Date:** 2026-06-11
+- **Context:** The AI assistant needed to manage Gitea project board columns from a headless Cline background process. extea requires an interactive TTY (isatty()), which isn't available in background exec mode.
+- **Decision:** Invoke extea.exe through `pwsh -noprofile -Command` via `execute_command` with `requires_approval: true`. PowerShell 7 provides a foreground terminal handle that satisfies isatty().
+- **Rationale:**
+  - AllocConsole/CREATE_NEW_CONSOLE approaches in Go and C could create a console handle but couldn't capture output — stdout went to the invisible console, not the caller.
+  - ConPTY wrappers crashed due to Windows API calling convention issues with syscall/unsafe.
+  - pwsh spawns a real foreground terminal with stdout/stderr pipes intact, resolving both the TTY requirement and output capture.
+  - PS7 was already installed (TLS 1.3+ capable) — no new dependencies.
+- **Usage pattern:**
+  ```
+  pwsh -noprofile -Command "$env:GITEA_PASSWORD='...'; & 'extea.exe' projects list -r ben/warpbox -l cline -o json"
+  ```
+- **Outcome:** All kanban board operations work. Updated `.clinerules/system-patterns.md` §8 to document the pwsh-based approach. Created the 6 kanban columns (Backlog, Research/Spikes, Ready to Dev, In Progress, Review/QA, Done) that were previously missing.
