@@ -115,3 +115,20 @@
   1. Direct HTTP web session (partially worked, column CRUD got 500)
   2. extea subprocess (extea hangs on stdin)
 - **Outcome:** Codified in the `.clinerules/` rules files. The project board still needs manual column assignment via the Gitea web UI (the Projects API is not exposed in Gitea 1.25.5).
+
+## D-010: Build-script approach for dev-deploy
+
+- **Date:** 2026-06-11
+- **Context:** The dev-deploy script (`dev-deploy script`) needed to compile a Go binary inside a throwaway `golang:1.26-alpine` container on REDACTED. Initially used an inline `sh -c "...\"...\"..."` command, which broke due to nested quoting across 4 shell layers (PowerShell → SSH → bash → sh).
+- **Decision:** Use a standalone `docker-build.sh` script file instead of inline shell commands.
+- **Rationale:** The script is uploaded with the source code via tar pipe (step 3), then invoked as `sh /src/docker-build.sh`. Zero quoting issues because double quotes in the Go `-ldflags` are written naturally in a real shell file.
+- **Alternatives considered:** Inline `sh -c` with various quoting strategies (double quotes with `\"` escape, single quotes with `''` PowerShell escape). All failed because the `&&` operator or `-ldflags` arguments got parsed by the wrong shell layer.
+- **Outcome:** `docker-build.sh` created. The docker run command is now just `golang:1.26-alpine sh /src/docker-build.sh`. Verified working.
+
+## D-011: `docker exec` binary swap before restart
+
+- **Date:** 2026-06-11
+- **Context:** The running warpbox container uses the production image's `ENTRYPOINT ["warpbox", ...]` which does not check for `/data/warpbox-next`. The self-upgrading entrypoint (`docker-entrypoint.sh`) only ships in future image releases.
+- **Decision:** The dev-deploy script uses `docker exec` to copy the new binary into the container's filesystem *before* `docker restart`. The overlay filesystem persists across restarts.
+- **Rationale:** Works with the current production image without rebuilding it. The entrypoint script is still valuable for future images (cleaner pattern), but `docker exec` is needed for backward compatibility.
+- **Outcome:** Step 5 of `dev-deploy script` now does `docker exec warpbox cp /data/warpbox-next /usr/local/bin/warpbox` followed by `docker restart warpbox`. Verified working.
