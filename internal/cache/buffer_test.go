@@ -158,3 +158,38 @@ func TestDifferentOffsets(t *testing.T) {
 		t.Errorf("offset 100: got %q", string(got))
 	}
 }
+
+// TestLargeOffsets verifies that offsets > 1,114,111 (the max valid Unicode
+// code point) do NOT collide in the key function. The old string(rune(offset))
+// implementation would produce the replacement character \ufffd for any large
+// offset, causing all large-offset keys to collide and serve wrong data.
+// Refs #72.
+func TestLargeOffsets(t *testing.T) {
+	b := NewBuffer(1024*1024, 1024, 30*time.Second, StrategyTTL)
+	defer b.Stop()
+
+	// Each offset is well above the Unicode code point limit.
+	b.Put(1, 273509155, []byte("offset_273M"))
+	b.Put(1, 307063587, []byte("offset_307M"))
+	b.Put(1, 340618019, []byte("offset_340M"))
+
+	tests := []struct {
+		offset int64
+		want   string
+	}{
+		{273509155, "offset_273M"},
+		{307063587, "offset_307M"},
+		{340618019, "offset_340M"},
+	}
+
+	for _, tc := range tests {
+		got := b.Get(1, tc.offset)
+		if got == nil {
+			t.Errorf("offset %d: expected %q, got nil (cache miss — key collision?)", tc.offset, tc.want)
+			continue
+		}
+		if string(got) != tc.want {
+			t.Errorf("offset %d: got %q, want %q", tc.offset, string(got), tc.want)
+		}
+	}
+}

@@ -6,6 +6,7 @@
 package cache
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -55,7 +56,7 @@ func NewBuffer(maxRAM int, chunkSize int, ttl time.Duration, strategy EvictionSt
 
 // key builds a map key from a file identifier and byte offset.
 func key(fileID int, offset int64) string {
-	return string(rune(fileID)) + ":" + string(rune(offset))
+	return fmt.Sprintf("%d:%d", fileID, offset)
 }
 
 // Get retrieves a cached chunk, or nil if not present or expired.
