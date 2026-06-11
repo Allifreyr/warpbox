@@ -149,3 +149,22 @@
   pwsh -noprofile -Command "$env:GITEA_PASSWORD='...'; & 'extea.exe' projects list -r ben/warpbox -l cline -o json"
   ```
 - **Outcome:** All kanban board operations work. Updated `.clinerules/system-patterns.md` §8 to document the pwsh-based approach. Created the 6 kanban columns (Backlog, Research/Spikes, Ready to Dev, In Progress, Review/QA, Done) that were previously missing.
+
+## D-013: "Slow disk" hang instead of error when CDN is unavailable
+
+- **Date:** 2026-06-11
+- **Context:** When TorBox CDN returns 500, warpbox returns 502 → rclone counts as error → after 10 errors rclone permanently kills the file → Plex trashes it. Rclone's `maxErrorCount=10` is hardcoded (not configurable), `Retry-After` is not respected, and all non-2xx status codes are treated identically in `lib/rest/rest.go:358-366`.
+- **Decision:** When CDN URL fetch fails in `handleGet`, instead of returning an HTTP error status, send `200 OK` / `206 Partial Content` headers immediately and hold the body stream open while polling for the CDN URL every 15 seconds. When the CDN recovers, transparently proxy the real data.
+- **Rationale:**
+  - Rclone only increments `errorCount` when `err != nil` (`vfs/vfscache/downloaders/downloaders.go:145-161`). A slow-but-successful read resets the counter to 0.
+  - Rclone's default `--timeout` is 5 minutes → worst case 1 error per 5 minutes → 50+ minutes of patience before maxErrorCount=10 is hit.
+  - Plex/Jellyfin already buffer and show a spinner for slow-starting streams — indistinguishable from a spinning disk.
+  - The negative cache (30s TTL) and circuit breaker still protect TorBox from excessive API calls during the poll loop.
+  - No fake data, no empty responses — just patience.
+- **Alternatives considered:**
+  1. Change 502 → 503 + Retry-After: rclone doesn't respect Retry-After; all non-2xx still count as errors.
+  2. Increase rclone `maxErrorCount`: hardcoded constant, no config flag exists.
+  3. Remove negative cache: circuit breaker also produces errors; same fundamental problem.
+  4. Return fake 200 with empty/synthetic data: risks Plex caching a corrupt response; creates confusion during metadata scans.
+- **Outcome:** Implementation in `internal/server/get.go` `handleGet`. When `fetchCDNURL` fails, send success headers immediately and enter a poll loop. Existing error paths (store lookup failures, invalid ranges, etc.) are unchanged.
+- **Issue:** #64
