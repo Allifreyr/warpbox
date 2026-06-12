@@ -9,6 +9,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -191,6 +192,11 @@ func (s *Server) startCleanupLoop() {
 			case <-ticker.C:
 				s.sweepNegativeCache()
 				s.sweepCircuitBreaker()
+				// Force Go to release unused memory arenas back to the OS.
+				// Without this, Go's runtime holds onto pages from past peak
+				// allocations (the high-water mark), causing sys_mem to stay
+				// at 1.6GB+ even when the live heap is only 1MB.
+				debug.FreeOSMemory()
 			case <-s.cleanupStopCh:
 				return
 			}
