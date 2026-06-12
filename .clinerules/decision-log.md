@@ -185,3 +185,43 @@
   4. Return fake 200 with empty/synthetic data: risks Plex caching a corrupt response; creates confusion during metadata scans.
 - **Outcome:** Implementation in `internal/server/get.go` `handleGet`. When `fetchCDNURL` fails, send success headers immediately and enter a poll loop. Existing error paths (store lookup failures, invalid ranges, etc.) are unchanged.
 - **Issue:** #64
+
+## D-015: CDN proxy 429/5xx → hang/poll mode (extends D-013)
+
+- **Date:** 2026-06-11
+- **Context:** D-013 only covered CDN URL *fetch* failures from the TorBox API. The CDN data servers themselves also return 429 when too many concurrent chunk downloads target the same torrent. When CDN proxy returned 429/5xx, `handleGet` returned 502 to rclone, which counted toward `maxErrorCount=10`, eventually trashing the file.
+- **Decision:** Route CDN data proxy 429/5xx responses into `handleGetCDNHang` instead of returning 502. Invalidate the cached CDN URL first so the hang loop polls for a fresh URL.
+- **Rationale:**
+  - Same "slow spinning disk" pattern as D-013 — rclone sees a slow-but-alive connection instead of an error.
+  - Invalidating the cached URL gives the CDN time to drain connections on that torrent before we retry.
+  - The existing negative cache (30s TTL) and circuit breaker still protect the TorBox API.
+- **Implementation:** `internal/server/get.go` lines 192-215. New check for `http.StatusTooManyRequests` and `>= 500` before the generic non-200 handler.
+- **Issue:** #64
+
+## D-016: CDN connection semaphore + reduced default concurrency 8→4
+
+- **Date:** 2026-06-11
+- **Context:** TorBox CDN rate-limits per-torrent concurrent chunk downloads. With `MaxCDNConnections=8`, eight concurrent 32MB chunk downloads against the same torrent triggered CDN 429s. Plex scanning entire seasons multiplied the problem.
+- **Decision:** Implement a channel-based CDN connection semaphore (`cdnSem chan struct{}`) and lower the default `MaxCDNConnections` from 8 to 4. Apply the semaphore in both `handleGet` (normal proxy) and `handleGetCDNHang` (recovery proxy).
+- **Rationale:**
+  - The semaphore guarantees we never exceed N concurrent CDN data connections, preventing the CDN throttle from triggering.
+  - `AcquireCDNConn()` blocks until a slot is available — requests queue naturally rather than failing.
+  - Configurable via `cache.max_cdn_connections` in config.yml with documented valid range 1–64.
+  - 4 connections × 32MB chunk = 128MB concurrent in-flight data, well below the CDN's apparent per-torrent limit.
+- **Alternatives considered:** Client-side rate limiting via token bucket. Rejected because the CDN throttles per-connection, not per-request — a simple semaphore is the correct primitive.
+- **Implementation:** `internal/server/server.go` — `cdnSem` field created in `New()`, filled with `maxConns` tokens. `AcquireCDNConn()`/`ReleaseCDNConn()` methods added. Called around `io.Copy` in both proxy paths.
+- **Issue:** #64
+
+## D-017: `debug.FreeOSMemory()` + pprof endpoint
+
+- **Date:** 2026-06-12
+- **Context:** After 12 hours of runtime, Go's runtime held 1,684MB of system memory (`sys_mb`) while the live heap was only 1MB (`alloc_mb`). The cache was empty (0 entries). Go's GC freed the data correctly but never released the memory arenas back to the OS — the high-water mark from peak CDN proxy buffer pre-allocations (concurrent 32-268MB `bytes.Buffer` allocations) persisted indefinitely.
+- **Decision:** Add `runtime/debug.FreeOSMemory()` to the periodic cleanup loop (runs every `cleanup_interval_seconds`, default 60s). Also add `net/http/pprof` endpoints at `/debug/pprof/` for heap profiling without SSH.
+- **Rationale:**
+  - `FreeOSMemory()` tells Go to scan all arenas and return empty ones to the OS. It only releases truly unused pages — active data is untouched.
+  - Called every 60s alongside the negative cache and circuit breaker sweep — minimal overhead (~2ms per call when heap is small).
+  - After deploy, `sys_mb` dropped from 1,684 to 642 under identical load. Estimated steady-state sys_mb will stay at ~1.5×-3× alloc_mb instead of accumulating indefinitely.
+  - The pprof endpoint enables deep dives with `go tool pprof http://host:1412/debug/pprof/heap` without needing SSH access to REDACTED.
+- **Performance impact:** `FreeOSMemory()` is a STW pause. In practice the heap is small (10-500MB), so the pause is <5ms. Acceptable for a WebDAV proxy — the user experience is buffered streaming.
+- **Implementation:** `internal/server/server.go` — `debug.FreeOSMemory()` added to cleanup loop, `import "runtime/debug"`. Pprof routes added in `registerRoutes()`.
+- **Issue:** #64
