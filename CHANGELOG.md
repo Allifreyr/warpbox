@@ -5,6 +5,21 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.0] - 2026-06-13
+
+### Added
+- Config validation — every tunable field now has strict range checking with clear error messages instead of silent clamping, refs #97
+- HTTP streaming endpoint at `/http/` for direct file serving through Warpbox, closes #25
+- Display TorBox account details (plan, email, storage used) on the landing page, refs #93
+
+### Changed
+- Remove RAM byte-range cache — all data passes through the CDN proxy without an intermediate memory buffer
+
+### Fixed
+- Record per-interval deltas for counter metrics in stats charts (previously showed cumulative values), refs #89
+- Highlight active log level button on landing page and prevent re-clicking the already-selected level, refs #90
+- Lower CDN streaming copy error logs from ERROR to DEBUG to reduce noise from connection races
+
 ## [v0.3.1] - 2026-06-12
 
 ### Fixed
@@ -155,7 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Docker login as ci-bot not ben
 
-[Unreleased]: https://REDACTED/ben/warpbox/compare/v0.3.1...HEAD
+[Unreleased]: https://REDACTED/ben/warpbox/compare/v0.4.0...HEAD
+[v0.4.0]: https://REDACTED/ben/warpbox/compare/v0.3.1...v0.4.0
 [v0.3.1]: https://REDACTED/ben/warpbox/compare/v0.3.0...v0.3.1
 [v0.3.0]: https://REDACTED/ben/warpbox/compare/v0.2.3...v0.3.0
 [v0.2.3]: https://REDACTED/ben/warpbox/compare/v0.2.2...v0.2.3
