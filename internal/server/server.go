@@ -136,6 +136,11 @@ type Config struct {
 	// slog.HandlerOptions.Level so a Set() call takes effect immediately.
 	// Must be set by main.go after New() returns.
 	LevelVar *slog.LevelVar
+
+	// Auth settings for optional HTTP Basic Authentication on web UI.
+	AuthEnabled  bool
+	AuthUsername string
+	AuthPassword string
 }
 
 // New creates a new WebDAV server.
@@ -394,36 +399,40 @@ func (s *Server) versionHeader(next http.Handler) http.Handler {
 
 // registerRoutes sets up the HTTP handlers for WebDAV methods,
 // the HTML browser, branded landing page, and embedded favicon/logo.
+//
+// Routes marked with s.requireAuth are protected by optional HTTP Basic
+// Authentication. WebDAV and Infuse routes are deliberately excluded
+// because they are consumed by rclone/Plex, not a browser.
 func (s *Server) registerRoutes() {
 	handler := s.versionHeader(http.HandlerFunc(s.handleWebDAV))
 	s.mux.Handle(s.root+"/", handler)
 	s.mux.Handle(s.root, handler)
 
-	s.mux.Handle("/http/", s.versionHeader(http.HandlerFunc(s.handleHTTP)))
-	s.mux.Handle("/http", s.versionHeader(http.HandlerFunc(s.handleHTTP)))
+	s.mux.Handle("/http/", s.versionHeader(s.requireAuth(s.handleHTTP)))
+	s.mux.Handle("/http", s.versionHeader(s.requireAuth(s.handleHTTP)))
 
 	s.mux.Handle("/infuse/", s.versionHeader(http.HandlerFunc(s.handleWebDAV)))
 	s.mux.Handle("/infuse", s.versionHeader(http.HandlerFunc(s.handleWebDAV)))
 
-	s.mux.Handle("/logs/", s.versionHeader(http.HandlerFunc(s.handleLogs)))
-	s.mux.Handle("/logs", s.versionHeader(http.HandlerFunc(s.handleLogs)))
+	s.mux.Handle("/logs/", s.versionHeader(s.requireAuth(s.handleLogs)))
+	s.mux.Handle("/logs", s.versionHeader(s.requireAuth(s.handleLogs)))
 
-	s.mux.Handle("/actions/", s.versionHeader(http.HandlerFunc(s.handleActions)))
+	s.mux.Handle("/actions/", s.versionHeader(s.requireAuth(s.handleActions)))
 
 	// pprof endpoints for runtime profiling (heap, goroutine, CPU, etc.).
 	// Only registered when enable_pprof is true in config.
 	if s.cfg.EnablePprof {
-		s.mux.Handle("/debug/pprof/", s.versionHeader(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mux.Handle("/debug/pprof/", s.versionHeader(s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 			http.DefaultServeMux.ServeHTTP(w, r)
 		})))
-		s.mux.Handle("/debug/pprof", s.versionHeader(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mux.Handle("/debug/pprof", s.versionHeader(s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 			http.DefaultServeMux.ServeHTTP(w, r)
 		})))
 	}
 
 	s.mux.Handle("/healthz", s.versionHeader(http.HandlerFunc(s.handleHealthz)))
-	s.mux.Handle("/stats.json", s.versionHeader(http.HandlerFunc(s.handleStatsJSON)))
-	s.mux.Handle("/", s.versionHeader(http.HandlerFunc(s.handleLanding)))
+	s.mux.Handle("/stats.json", s.versionHeader(s.requireAuth(s.handleStatsJSON)))
+	s.mux.Handle("/", s.versionHeader(s.requireAuth(s.handleLanding)))
 	s.mux.HandleFunc("/warpbox.svg", s.handleLogo)
 	s.mux.HandleFunc("/favicon.ico", s.handleLogo)
 }

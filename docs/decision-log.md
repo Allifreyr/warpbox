@@ -126,3 +126,13 @@ This page documents all significant architectural and technical decisions made d
 - **Key evidence:** Actual Docker stats show 47.2MB RSS, 0% CPU idle. `sys_mb` stats metric has been a flat 46MB for the entire 120-minute window. `alloc_mb` averages 3.8MB (live heap). The "20GB" value once observed across a 12GB host physically disproved the interpretation — a 12GB machine cannot allocate 20GB of RSS.
 - **Implementation:** Never actually committed — `FreeOSMemory()` was never added to `startCleanupLoop()`. The code was correct without it.
 - **Issue:** #64, #105
+
+## D-019: Optional HTTP Basic Authentication for web UI
+
+- **Date:** 2026-06-15
+- **Context:** The web management UI (landing page, logs, actions, stats, HTTP browser) was accessible to anyone on the network without authentication. Users hosting warpbox on shared or semi-public networks needed a way to restrict management access.
+- **Decision:** Add an optional `auth` config section with `enabled`, `username`, and `password` keys. When enabled, HTTP Basic Authentication is enforced on browser-facing routes. WebDAV and Infuse routes are deliberately excluded because they are consumed by rclone/Plex (which do not support interactive auth prompts). The `/healthz` endpoint is also excluded for Docker healthchecks.
+- **Rationale:** Basic Auth is simple, built into Go's `net/http`, and requires no external dependencies. Plaintext password storage matches the existing TorBox API key pattern — the config file is already protected by filesystem permissions. Constant-time comparison (`subtle.ConstantTimeCompare`) prevents timing attacks on the middleware.
+- **Alternatives considered:** bcrypt-hashed passwords (rejected — overkill for a LAN-side UI); Bearer token (rejected — adds header management complexity); protecting WebDAV routes (rejected — would break rclone/Plex integrations).
+- **Implementation:** `internal/config/config.go` (AuthConfig struct, defaults, validation), `internal/server/auth.go` (requireAuth middleware), `internal/server/server.go` (route wrapping), `internal/server/landing.go`/`landing.html` (auth status indicator), `cmd/warpbox/main.go` (wiring).
+- **Issue:** #79

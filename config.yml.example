@@ -102,6 +102,21 @@ sync:
   # Must be 1–100000. Default: 5000
   # limit: 5000
 
+auth:
+  # Enable HTTP Basic Authentication for the web management UI.
+  # When enabled, the landing page, logs, actions, stats, and HTTP browser
+  # all require a username and password. The WebDAV, Infuse, and /healthz
+  # endpoints are NOT protected — they are consumed by rclone, Plex,
+  # Infuse, and Docker healthchecks respectively.
+  # Default: false
+  # enabled: false
+
+  # Username for HTTP Basic Auth. Default: "admin"
+  # username: "admin"
+
+  # Password for HTTP Basic Auth (required when enabled).
+  # password: "changeme"
+
 stats:
   # How often to record time-series stats snapshots (in seconds).
   # Snapshots include API call counts, memory usage, cache stats, etc.

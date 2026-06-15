@@ -82,6 +82,9 @@ type LandingData struct {
 	// Sync config fields
 	SyncLimit int
 
+	// Auth config fields
+	AuthEnabled bool // true if HTTP Basic Auth is enabled
+
 	// Stats config fields
 	StatsInterval    int // in seconds
 	StatsRetention   int // in hours
@@ -195,6 +198,9 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		CbMaxEntries:         s.cfg.CircuitBreakerMaxEntries,
 		CleanupInterval:      s.cfg.CleanupIntervalSeconds,
 		MaxCDNConnections:    s.cfg.MaxCDNConnections,
+
+		// Auth config
+		AuthEnabled: s.cfg.AuthEnabled,
 
 		// Sync config
 		SyncLimit: s.cfg.SyncLimit,

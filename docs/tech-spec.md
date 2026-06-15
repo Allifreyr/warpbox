@@ -88,7 +88,26 @@ log level update via `/actions/loglevel`.
 
 <!-- TODO: document config sections, validation rules, default values -->
 
-## 9. Throttle Queue
+## 9. Web UI Authentication
+
+**Key files:** `internal/config/config.go`, `internal/server/auth.go`, `internal/server/server.go`
+
+Optional HTTP Basic Authentication for the web management UI (landing page,
+logs, actions, stats, HTTP browser). Disabled by default for backward
+compatibility.
+
+- **Config section:** `auth` with `enabled`, `username`, `password` keys.
+- **Middleware:** `requireAuth()` wraps handler functions. Returns 401 +
+  `WWW-Authenticate` header when credentials are missing or wrong.
+- **Protected routes:** `/`, `/logs/`, `/actions/`, `/stats.json`, `/http/`,
+  `/debug/pprof/`.
+- **Excluded routes:** `/{webdav}/`, `/infuse/`, `/healthz`, `/warpbox.svg`,
+  `/favicon.ico`.
+- **Password storage:** Plaintext in `config.yml` (matches TorBox API key pattern).
+
+<!-- TODO: document auth middleware, scope, configuration -->
+
+## 10. Throttle Queue
 
 **Key files:** `internal/throttle/queue.go`
 

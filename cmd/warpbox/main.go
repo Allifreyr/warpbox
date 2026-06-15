@@ -169,6 +169,10 @@ func main() {
 	}
 	serverCfg.LevelVar = levelVar
 
+	serverCfg.AuthEnabled = cfg.Auth.Enabled
+	serverCfg.AuthUsername = cfg.Auth.Username
+	serverCfg.AuthPassword = cfg.Auth.Password
+
 	srv := server.New(
 		serverCfg,
 		metadataStore,

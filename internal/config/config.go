@@ -74,6 +74,13 @@ type StatsConfig struct {
 	ChartMinutes    int `yaml:"chart_minutes"`    // How far back the landing page chart shows; default 60
 }
 
+// AuthConfig holds optional HTTP Basic Authentication settings for the web UI.
+type AuthConfig struct {
+	Enabled  bool   `yaml:"enabled"`  // Enable Basic Auth for web management UI; default false
+	Username string `yaml:"username"` // Default: "admin"
+	Password string `yaml:"password"` // Required when enabled
+}
+
 // Config is the top-level Warpbox configuration.
 type Config struct {
 	TorBox   TorBoxConfig   `yaml:"torbox"`
@@ -83,6 +90,7 @@ type Config struct {
 	Logging  LoggingConfig  `yaml:"logging"`
 	Sync     SyncConfig     `yaml:"sync"`
 	Stats    StatsConfig    `yaml:"stats"`
+	Auth     AuthConfig     `yaml:"auth"`
 }
 
 // setDefaults fills in default values for any zero-valued fields.
@@ -167,6 +175,9 @@ func setDefaults(c *Config) {
 	if c.Cache.MaxCDNConnections == nil {
 		n := 8
 		c.Cache.MaxCDNConnections = &n
+	}
+	if c.Auth.Username == "" {
+		c.Auth.Username = "admin"
 	}
 }
 
@@ -267,6 +278,9 @@ func validate(c *Config) error {
 	}
 	if c.Throttle.RequestsPerMinute < 10 || c.Throttle.RequestsPerMinute > 1000 {
 		return fmt.Errorf("throttle.requests_per_minute must be 10–1000, got %d", c.Throttle.RequestsPerMinute)
+	}
+	if c.Auth.Enabled && c.Auth.Password == "" {
+		return fmt.Errorf("auth.password is required when auth.enabled is true")
 	}
 	return nil
 }
