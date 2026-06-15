@@ -183,12 +183,12 @@ This page documents all significant architectural and technical decisions made d
 - **Implementation:** `internal/server/server.go` — `cdnSem` field, `AcquireCDNConn()`/`ReleaseCDNConn()` methods.
 - **Issue:** #64
 
-## D-017: `debug.FreeOSMemory()` + pprof endpoint
+## D-017: `debug.FreeOSMemory()` + pprof endpoint (INVALIDATED)
 
-- **Date:** 2026-06-12
-- **Context:** After 12 hours of runtime, Go's runtime held 1,684MB system memory while live heap was only 1MB. Go's GC never released arenas back to the OS.
-- **Decision:** Add `runtime/debug.FreeOSMemory()` to the periodic cleanup loop (every 60s). Also add `net/http/pprof` endpoints at `/debug/pprof/`.
-- **Rationale:** `FreeOSMemory()` only releases truly unused pages. Called every 60s alongside cache sweep — minimal overhead (~2ms when heap is small).
-- **Performance impact:** STW pause <5ms for a 10-500MB heap. Acceptable for a buffered WebDAV proxy.
-- **Implementation:** `internal/server/server.go` — cleanup loop + pprof routes.
-- **Issue:** #64
+- **Date:** 2026-06-12 (invalidated 2026-06-15)
+- **Context:** After 12 hours of runtime, Go's `runtime.MemStats.Sys` reported 1,684MB. This was misinterpreted as resident memory.
+- **Decision (original):** Add `runtime/debug.FreeOSMemory()` to the periodic cleanup loop.
+- **Invalidation Rationale:** `MemStats.Sys` is a **cumulative counter** of all bytes ever requested from the OS — it only grows and never decreases, even when Go returns pages. It does not represent actual RSS/working set. Real container memory usage is 47MB RSS, confirming `FreeOSMemory()` is unnecessary. The `pprof` endpoints at `/debug/pprof/` were already added (not related to this decision).
+- **Key evidence:** Actual Docker stats show 47.2MB RSS, 0% CPU idle. `sys_mb` stats metric has been a flat 46MB for the entire 120-minute window. `alloc_mb` averages 3.8MB (live heap). The "20GB" value once observed across a 12GB host physically disproved the interpretation — a 12GB machine cannot allocate 20GB of RSS.
+- **Implementation:** Never actually committed — `FreeOSMemory()` was never added to `startCleanupLoop()`. The code was correct without it.
+- **Issue:** #64, #105

@@ -8,6 +8,7 @@ package metadata
 import (
 	"context"
 	"log/slog"
+	"runtime"
 	"strings"
 	"time"
 	"unicode"
@@ -115,6 +116,14 @@ func errorString(err error) string {
 // syncOnce performs a single sync cycle through the throttle queue.
 func (w *SyncWorker) syncOnce(ctx context.Context) {
 	slog.Debug("metadata sync: starting")
+
+	// Record GC cycles before sync to measure allocation pressure.
+	var gcStart uint32
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		gcStart = mem.NumGC
+	}
 
 	type torrentResult struct {
 		torrents []torbox.Torrent
@@ -265,6 +274,16 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 			slog.Error("metadata sync: prune failed", "error", pruneErr)
 		} else if deleted > 0 {
 			slog.Info("metadata sync: pruned stale records", "count", deleted)
+		}
+	}
+
+	// Log GC cycles that fired during this sync, if any.
+	if gcStart > 0 {
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		gcDelta := mem.NumGC - gcStart
+		if gcDelta > 0 {
+			slog.Debug("metadata sync: gc cycles during sync", "gc_delta", gcDelta)
 		}
 	}
 
