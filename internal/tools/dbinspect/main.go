@@ -52,19 +52,19 @@ func main() {
 
 	// Sample entries
 	fmt.Println("\n=== Sample Records (first 5) ===")
-	rows, err := db.Query(`SELECT id, torrent_id, file_id, name, path, size, mime_type FROM files LIMIT 5`)
+	rows, err := db.Query(`SELECT id, item_id, file_id, name, path, size, mime_type FROM files LIMIT 5`)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "query error: %v\n", err)
 	} else {
 		defer rows.Close()
 		for rows.Next() {
-			var id, tid, fid, size int64
+			var id, iid, fid, size int64
 			var name, path, mime string
-			if err := rows.Scan(&id, &tid, &fid, &name, &path, &size, &mime); err != nil {
+			if err := rows.Scan(&id, &iid, &fid, &name, &path, &size, &mime); err != nil {
 				fmt.Fprintf(os.Stderr, "scan error: %v\n", err)
 				continue
 			}
-			fmt.Printf("  [%d] t=%d f=%d %s (%s) — %s\n", id, tid, fid, name, mime, formatSize(size))
+			fmt.Printf("  [%d] i=%d f=%d %s (%s) — %s\n", id, iid, fid, name, mime, formatSize(size))
 			fmt.Printf("       path=%s\n", path)
 		}
 	}
@@ -72,11 +72,11 @@ func main() {
 	// Check for anomalies
 	fmt.Println("\n=== Anomaly Check ===")
 	var nullTorrents int64
-	db.QueryRow(`SELECT COUNT(*) FROM files WHERE torrent_id = 0`).Scan(&nullTorrents)
+	db.QueryRow(`SELECT COUNT(*) FROM files WHERE item_id = 0`).Scan(&nullTorrents)
 	if nullTorrents > 0 {
-		fmt.Printf("  ⚠️  %d records with torrent_id=0\n", nullTorrents)
+		fmt.Printf("  ⚠️  %d records with item_id=0\n", nullTorrents)
 	} else {
-		fmt.Println("  ✅ No zero torrent_ids")
+		fmt.Println("  ✅ No zero item_ids")
 	}
 
 	var nullFileIDs int64
