@@ -62,25 +62,6 @@ This page documents all significant architectural and technical decisions made d
   - MinGW-w64 GCC is available on the dev machine.
 - **Trade-off:** Cross-compilation for non-Windows targets requires a C cross-compiler or a different driver.
 
-## D-006: Use Gitea Issues instead of active-context.md for work tracking
-
-- **Date:** 2026-06-10
-- **Context:** The project's `active-context.md` was being manually updated to track progress but quickly became stale.
-- **Decision:** Delete `active-context.md` and rely entirely on Gitea Issues for feature/bug/priority tracking.
-- **Rationale:**
-  - Gitea Issues provide structured labels, priorities, milestones, and comments.
-  - The AI assistant reads issues via the MCP server, making the issue tracker directly actionable.
-  - A single `active-context.md` duplicated the issue tracker.
-- **Outcome:** Work tracking lives in Gitea Issues. The decision log remains only for non-obvious architectural/technical choices.
-
-## D-007: Gitea Projects + Wiki for agile workflow
-
-- **Date:** 2026-06-11
-- **Context:** The repo had 11 open issues with no project board and no structured workflow. The Testing Suite issue was too large for a single issue.
-- **Decision:** Created the "Warpbox Kanban" project board with 6 columns and a WIP limit of 2. Moved the Testing Suite strategy to the Gitea Wiki as a living page.
-- **Rationale:** A solo developer Kanban board gives visual priority ordering without requiring milestones. The Wiki is the right place for a testing strategy that evolves over time.
-- **Outcome:** Codified in `AI instructions`. The project board still needs manual column assignment via the Gitea web UI (the Projects API is not exposed in Gitea 1.25.5).
-
 ## D-008: Exponential backoff + negative cache + circuit breaker for CDN URL fetches
 
 - **Date:** 2026-06-11
@@ -92,42 +73,6 @@ This page documents all significant architectural and technical decisions made d
 - **Rationale:** The negative cache breaks Plex's retry loop at the application level. The circuit breaker prevents a single expired torrent from consuming all rate budget.
 - **Thresholds:** retries=3, backoff=[1s,2s,4s], 429 backoff=5s, negative-cache TTL=30s, circuit-breaker=[5 failures, 60s window, 5min stale]
 - **Issue:** #59
-
-## D-009: extea-as-subprocess rejected; Python web session also blocked
-
-- **Date:** 2026-06-11
-- **Context:** Gitea has no REST API for project boards. The CLI tool `extea` (a `tea` wrapper) was evaluated for kanban board operations.
-- **Decision:** Do not integrate extea into the MCP server.
-- **Rationale:**
-  - Python web session auth worked for project creation but column creation returned HTTP 500.
-  - Spawning extea.exe as a Python subprocess timed out — extea appears to require a TTY.
-  - Both approaches consumed ~100 tool calls with no working outcome.
-- **Alternatives considered:** Direct HTTP web session, extea subprocess, ConPTY wrapper.
-- **Resolution (D-012):** See D-012.
-
-## D-010: Build-script approach for dev-deploy
-
-- **Date:** 2026-06-11
-- **Context:** The dev-deploy script (`dev-deploy script`) needed to compile a Go binary inside a throwaway `golang:1.26-alpine` container on REDACTED.
-- **Decision:** Use a standalone `docker-build.sh` script file instead of inline shell commands.
-- **Rationale:** The script is uploaded with source code via tar pipe, then invoked as `sh /src/docker-build.sh`. Zero quoting issues across 4 shell layers.
-- **Alternatives considered:** Inline `sh -c` with various quoting strategies — all failed due to layered shell parsing.
-- **Outcome:** `docker-build.sh` created and verified working.
-
-## D-011: `docker exec` binary swap before restart
-
-- **Date:** 2026-06-11
-- **Context:** The running warpbox container uses the production image's `ENTRYPOINT` which does not check for `/data/warpbox-next`.
-- **Decision:** The dev-deploy script uses `docker exec` to copy the new binary into the container's filesystem *before* `docker restart`.
-- **Rationale:** Works with the current production image without rebuilding it.
-- **Outcome:** Step 5 of `dev-deploy script` now does the binary copy followed by restart.
-
-## D-012: extea via pwsh + execute_command (SUPERSEDED BY D-014)
-
-- **Date:** 2026-06-11 (superseded 2026-06-11)
-- **Context:** The AI assistant needed to manage Gitea project board columns from a headless Cline process. extea requires a TTY.
-- **Decision:** Invoke extea.exe through `pwsh -noprofile -Command` via `execute_command` with `requires_approval: true`.
-- **Outcome:** Superseded by D-014. The Python web session approach is faster and doesn't need `requires_approval: true`.
 
 ## D-013: "Slow disk" hang instead of error when CDN is unavailable
 
@@ -152,17 +97,6 @@ This page documents all significant architectural and technical decisions made d
 - **Implementation:** `internal/metadata/store.go` and `cmd/warpbox/main.go` — no schema changes, no new config keys.
 - **Issue:** #100
 - **Outcome:** All 19 metadata tests pass. Committed as 2442ec4.
-
-## D-014: Python web session for project board operations
-
-- **Date:** 2026-06-11
-- **Context:** D-012's extea+pwsh approach required `execute_command` with `requires_approval: true` for every board operation.
-- **Decision:** Implement board CRUD via direct Python web session (cookie + CSRF auth) using correct Gitea web UI routes, reverse-engineered from Gitea 1.25.5 source code.
-- **Routes discovered:** POST for creating columns/boards, PUT for column edits, DELETE for column deletion, JSON body for issue moves.
-- **Key details:** CSRF token extracted from `window.config.csrfToken` on the board page.
-- **Outcome:** Board operations execute directly inside the Python process, no pwsh/extea needed.
-- **Cleanup:** `_EXTEA`, `_PWSH_TEMPLATE` artifacts removed from `server.py`.
-- **Issue:** #74
 
 ## D-015: CDN proxy 429/5xx → hang/poll mode (extends D-013)
 
@@ -192,25 +126,3 @@ This page documents all significant architectural and technical decisions made d
 - **Key evidence:** Actual Docker stats show 47.2MB RSS, 0% CPU idle. `sys_mb` stats metric has been a flat 46MB for the entire 120-minute window. `alloc_mb` averages 3.8MB (live heap). The "20GB" value once observed across a 12GB host physically disproved the interpretation — a 12GB machine cannot allocate 20GB of RSS.
 - **Implementation:** Never actually committed — `FreeOSMemory()` was never added to `startCleanupLoop()`. The code was correct without it.
 - **Issue:** #64, #105
-
-## D-019: `board_issues` MCP tool `move` must use internal issue IDs for board operations
-
-- **Date:** 2026-06-15
-- **Context:** The `board_issues` tool's `move` method in `gitea-unified/server.py` silently returned `{"ok": true}` without actually moving issues. Step 2 (via `move_issues`) was passing issue **numbers** (e.g. 107) to the `POST /projects/{id}/move` endpoint, but Gitea's board stores `data-issue` attributes using internal database IDs (e.g. 109 for issue #107).
-- **Decision:** Collect each issue's internal `id` from the REST API during Step 1, and pass those internal IDs to `move_issues` in Step 2.
-- **Rationale:** The board HTML uses internal IDs in `data-issue` attributes. The `/move` endpoint expects `issueID` values that match these — internal DB IDs, not issue numbers.
-- **Additional finding:** Step 1 (`POST /issues/projects?issue_ids=N`) returns `{"ok": true}` even when the assignment fails silently. This is a Gitea 1.25.5 endpoint quirk — `ctx.FormString("issue_ids")` in `getActionIssues()` appears to not parse the query string correctly when POST body data is also present. The `board_issues` tool attempts this assignment but does not treat a missing project assignment as fatal — it proceeds to the move step regardless. New issues that aren't already on the board must be added manually via the browser UI.
-- **Also fixed:** `_login()` now detects failed logins by checking for the login form in the POST response. `_refresh_csrf()` now verifies it received the actual board page (not a redirect to login).
-- **Issue:** #96
-
-## D-020: Standardise documentation file naming conventions
-
-- **Date:** 2026-06-15
-- **Context:** Documentation files used non-standard names (`system-patterns.md`, `tech-context.md`, `testing-suite.md`). Adding a new `tech-spec.md` raised the question of whether to keep the existing naming pattern or align with industry conventions.
-- **Decision:** Renamed to standard conventions:
-  - `system-patterns.md` → `ARCHITECTURE.md`
-  - `tech-context.md` → `DEVELOPMENT.md`
-  - `testing-suite.md` → `TESTING.md`
-- **Rationale:** Standard names are more discoverable and follow common open-source conventions. The `decision-log.md` and `auth-matrix.md` names are specific to this project's needs and have no common conventional alternative.
-- **Also:** Created `docs/tech-spec.md` skeleton as a technical specification that must match the code exactly. The audit prompt in `audit script` was updated to cross-reference technical docs against source code, and a new "Project Conventions & Structure" area was added to audit future naming consistency.
-- **Issue:** #96
