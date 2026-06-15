@@ -2,6 +2,7 @@ package server
 
 import (
 	"testing"
+	"time"
 
 	"github.com/ben/warpbox/internal/metadata"
 )
@@ -128,5 +129,30 @@ func TestCdnCacheKeyDifferentiation(t *testing.T) {
 	usenetKey := cdnCacheKey(metadata.SourceUsenet, 42, 7)
 	if torKey == usenetKey {
 		t.Error("torrent and usenet keys should differ with same item_id and file_id")
+	}
+}
+
+func TestCDNSemaphoreAcquireRelease(t *testing.T) {
+	s := &Server{
+		cdnSem: make(chan struct{}, 2),
+	}
+
+	// Acquire should succeed immediately when a token is available.
+	s.cdnSem <- struct{}{}
+	s.AcquireCDNConn()
+
+	// Acquire from goroutine, then release in main goroutine.
+	done := make(chan struct{})
+	go func() {
+		s.AcquireCDNConn()
+		close(done)
+	}()
+
+	s.ReleaseCDNConn()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AcquireCDNConn deadlocked — slot was not released properly")
 	}
 }

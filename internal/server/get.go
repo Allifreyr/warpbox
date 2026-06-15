@@ -257,11 +257,11 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		// Acquire a CDN connection slot to prevent excessive concurrent
 		// connections from causing TorBox CDN 429s.
 		s.AcquireCDNConn()
+		defer s.ReleaseCDNConn()
+		defer proxyResp.Body.Close()
 
 		// Stream from CDN → client.
 		written, copyErr := io.Copy(w, proxyResp.Body)
-		proxyResp.Body.Close()
-		s.ReleaseCDNConn()
 
 		if copyErr != nil {
 			// context canceled / broken pipe / connection reset are normal
