@@ -23,17 +23,17 @@ When filing a bug, include:
     ```bash
     git clone https://github.com/mainLink0435/warpbox.git
     cd warpbox
-    go build -o warpbox.exe ./cmd/warpbox/
+    CGO_ENABLED=1 go build -o warpbox ./cmd/warpbox/
     ```
 
 3. **Run tests:**
    ```bash
-   go test ./... -count=1
+   CGO_ENABLED=1 go test ./... -count=1 -timeout 120s
    ```
 
 4. **Local testing:**
    ```bash
-   warpbox.exe --config config.yml --db warpbox.db
+   ./warpbox -config config.yml -db warpbox.db
    ```
    Then browse to `http://localhost:1412/` and `http://localhost:1412/http/`.
 
