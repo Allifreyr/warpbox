@@ -49,3 +49,22 @@ board_page.html
 issue2.html
 test_results.txt
 $tmp
+
+# Internal tooling (kept on internal branch only)
+.gitea/
+.clinerules/
+audit script
+board.html
+dev-deploy script
+docker-build.sh
+gitea_web.go
+index.js
+integration test
+intensive test
+js_search.txt
+library_test.ps1
+name
+torbox_before.txt
+torbox_new.txt
+usenet_sample.json
+internal/server/warpbox-sm.png
