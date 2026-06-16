@@ -219,6 +219,11 @@ func main() {
 	select {
 	case <-ctx.Done():
 		slog.Info("shutting down warpbox")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("server shutdown error", "error", err)
+		}
 	case err := <-serverErr:
 		slog.Error("server error", "error", err)
 	}

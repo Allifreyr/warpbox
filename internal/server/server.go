@@ -54,6 +54,7 @@ type Server struct {
 	queue      *throttle.Queue
 	root       string
 	mux        *chi.Mux
+	httpServer *http.Server
 	startTime  time.Time
 	syncStatus SyncStatusFunc
 
@@ -734,6 +735,15 @@ func (s *Server) handleStatsJSON(w http.ResponseWriter, r *http.Request) {
 // Start begins listening on the configured address.
 func (s *Server) Start(ctx context.Context) error {
 	slog.Info("webdav server listening", "addr", s.cfg.ListenAddr)
-	return http.ListenAndServe(s.cfg.ListenAddr, s.mux)
+	s.httpServer = &http.Server{Addr: s.cfg.ListenAddr, Handler: s.mux}
+	return s.httpServer.ListenAndServe()
+}
+
+// Shutdown gracefully shuts down the HTTP server with a timeout context.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer != nil {
+		return s.httpServer.Shutdown(ctx)
+	}
+	return nil
 }
 
