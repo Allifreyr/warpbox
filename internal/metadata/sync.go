@@ -229,7 +229,11 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 	// Snapshot current items for change detection.
 	var oldItems []ItemDir
 	if w.OnItemsAdded != nil || w.OnItemsRemoved != nil {
-		oldItems, _ = w.store.ListItemDirs()
+		var err error
+		oldItems, err = w.store.ListItemDirs()
+		if err != nil {
+			slog.Warn("metadata sync: failed to snapshot items for change detection", "error", err)
+		}
 	}
 
 	// Record GC cycles before sync to measure allocation pressure.
@@ -375,8 +379,10 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 
 	// Detect added/removed items and fire hooks.
 	if len(oldItems) > 0 && (w.OnItemsAdded != nil || w.OnItemsRemoved != nil) {
-		newItems, _ := w.store.ListItemDirs()
-		if len(newItems) > 0 {
+		newItems, err := w.store.ListItemDirs()
+		if err != nil {
+			slog.Warn("metadata sync: failed to fetch items for change detection", "error", err)
+		} else if len(newItems) > 0 {
 			w.fireChangeHooks(oldItems, newItems)
 		}
 	}
