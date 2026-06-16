@@ -309,18 +309,20 @@ func (s *Server) isTorrentStale(itemID int64) bool {
 	if !exists {
 		return false
 	}
-	if time.Now().Before(tracker.staleUntil) {
-		slog.Warn("circuit breaker: item marked stale, skipping CDN URL fetch",
+	if !tracker.staleUntil.IsZero() {
+		if time.Now().Before(tracker.staleUntil) {
+			slog.Warn("circuit breaker: item marked stale, skipping CDN URL fetch",
+				"item_id", itemID,
+				"stale_until", tracker.staleUntil.Format(time.RFC3339),
+			)
+			return true
+		}
+		// Stale period expired — remove the tracker so we try again.
+		delete(s.torrentFailures, itemID)
+		slog.Info("circuit breaker: item stale period expired, will retry",
 			"item_id", itemID,
-			"stale_until", tracker.staleUntil.Format(time.RFC3339),
 		)
-		return true
 	}
-	// Stale period expired — remove the tracker so we try again.
-	delete(s.torrentFailures, itemID)
-	slog.Info("circuit breaker: item stale period expired, will retry",
-		"item_id", itemID,
-	)
 	return false
 }
 

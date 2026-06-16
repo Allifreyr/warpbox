@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Warpbox {{.Version}}</title>
     <link rel="icon" href="/favicon.ico" type="image/svg+xml">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="/chart.umd.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -494,6 +494,9 @@
     updateActiveLogLevel(initialLevel.textContent.trim());
   }
 
+  // CSRF token for action POST requests
+  var csrfToken = '{{.CSRFToken}}';
+
   // Toast notifications for all action forms
   function showToast(message, type) {
     const container = document.getElementById('toast-container');
@@ -522,7 +525,7 @@
         }
       }
 
-      fetch(action, { method: 'POST', body: body })
+      fetch(action, { method: 'POST', headers: { 'X-CSRF-Token': csrfToken }, body: body })
         .then(function(resp) {
           return resp.text().then(function(text) {
             if (resp.ok) {

@@ -31,6 +31,7 @@ func TestRouteTable(t *testing.T) {
 
 	req := func(method, path string) *http.Response {
 		r := httptest.NewRequest(method, path, nil)
+		r.Header.Set("X-CSRF-Token", srv.csrfToken)
 		w := httptest.NewRecorder()
 		srv.mux.ServeHTTP(w, r)
 		return w.Result()
@@ -213,4 +214,35 @@ func TestRoutePprofEnabled(t *testing.T) {
 			t.Errorf("/debug/pprof/heap: got status %d, want 200", resp.StatusCode)
 		}
 	})
+}
+
+func TestCSRFProtection(t *testing.T) {
+	srv := testServer(t)
+
+	tests := []struct {
+		name  string
+		method string
+		path  string
+		token string
+		want  int
+	}{
+		{"missing token", http.MethodPost, "/actions/resync", "", 403},
+		{"invalid token", http.MethodPost, "/actions/restart-sync", "bad-token", 403},
+		{"valid token", http.MethodPost, "/actions/resync", srv.csrfToken, 500},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(tt.method, tt.path, nil)
+			r.Header.Set("X-CSRF-Token", tt.token)
+			w := httptest.NewRecorder()
+			srv.mux.ServeHTTP(w, r)
+			resp := w.Result()
+			defer resp.Body.Close()
+			if resp.StatusCode != tt.want {
+				t.Errorf("%s %s: got status %d, want %d",
+					tt.method, tt.path, resp.StatusCode, tt.want)
+			}
+		})
+	}
 }

@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-//go:embed landing.html warpbox.svg
+//go:embed landing.html warpbox.svg chart.umd.min.js
 var landingFS embed.FS
 
 // landingTmpl is the parsed landing page template.
@@ -89,6 +89,9 @@ type LandingData struct {
 	StatsInterval    int // in seconds
 	StatsRetention   int // in hours
 	StatsChartWindow int // in minutes
+
+	// CSRF token for action forms
+	CSRFToken string
 
 	// TorBox account fields
 	TBUserID           int64
@@ -196,6 +199,7 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 
 		// Auth config
 		AuthEnabled: s.cfg.AuthEnabled,
+		CSRFToken:   s.csrfToken,
 
 		// Sync config
 		SyncLimit: s.cfg.SyncLimit,
@@ -252,6 +256,18 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm%ds", m, s)
 	}
 	return fmt.Sprintf("%ds", s)
+}
+
+// handleChartJS serves the embedded Chart.js bundle at /chart.umd.min.js.
+func (s *Server) handleChartJS(w http.ResponseWriter, r *http.Request) {
+	b, err := landingFS.ReadFile("chart.umd.min.js")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript")
+	w.WriteHeader(http.StatusOK)
+	w.Write(b)
 }
 
 // handleLogo serves the embedded warpbox.svg at /warpbox.svg and also at

@@ -7,6 +7,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	_ "net/http/pprof"
@@ -97,6 +99,9 @@ type Server struct {
 	// TorBox user info (refreshed periodically).
 	torboxUserInfo   *torbox.UserInfo
 	torboxUserInfoMu sync.Mutex
+
+	// CSRF token for management action endpoints.
+	csrfToken string
 }
 
 // webdavRoot is the canonical WebDAV root path — always "/webdav".
@@ -172,6 +177,8 @@ func New(cfg Config, store *metadata.Store, torBox *torbox.Client, queue *thrott
 		slog.Error("server: failed to build virtual path filters", "error", vpErr)
 	}
 
+	csrfToken := generateCSRFToken()
+
 	s := &Server{
 		cfg:       cfg,
 		store:     store,
@@ -180,6 +187,7 @@ func New(cfg Config, store *metadata.Store, torBox *torbox.Client, queue *thrott
 		root:      webdavRoot,
 		mux:       chi.NewRouter(),
 		startTime: time.Now(),
+		csrfToken: csrfToken,
 
 		negativeCache:          make(map[string]*negativeCacheEntry),
 		torrentFailures:        make(map[int64]*torrentFailureTracker),
@@ -220,6 +228,28 @@ func makeVirtualPathMap(filters []*library.Filter) map[string]*library.Filter {
 		m[strings.TrimPrefix(f.Mount, "/")] = f
 	}
 	return m
+}
+
+// generateCSRFToken returns a hex-encoded 32-byte random token.
+func generateCSRFToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("failed to generate CSRF token: " + err.Error())
+	}
+	return hex.EncodeToString(b)
+}
+
+// csrfMiddleware checks that POST requests carry a valid CSRF token.
+func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			if r.Header.Get("X-CSRF-Token") != s.csrfToken {
+				http.Error(w, "invalid or missing CSRF token", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // AcquireCDNConn blocks until a CDN connection slot is available.
@@ -599,6 +629,7 @@ func (s *Server) registerRoutes() {
 	// API: Actions (management sub-routes, all require auth).
 	s.mux.Route("/actions", func(r chi.Router) {
 		r.Use(requireAuth)
+		r.Use(s.csrfMiddleware)
 		r.Method("POST", "/resync", openapi.Annotated(
 			http.HandlerFunc(s.handleResync),
 			openapi.Operation{
@@ -664,6 +695,7 @@ func (s *Server) registerRoutes() {
 	s.mux.With(requireAuth).Get("/", s.handleLanding)
 
 	// Static assets.
+	s.mux.Get("/chart.umd.min.js", s.handleChartJS)
 	s.mux.Get("/warpbox.svg", s.handleLogo)
 	s.mux.Get("/favicon.ico", s.handleLogo)
 

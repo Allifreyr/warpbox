@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -317,5 +318,305 @@ func TestGetItemIDByFileIDSourceDisambiguation(t *testing.T) {
 	}
 	if usenetID != 200 {
 		t.Errorf("usenet item_id = %d, want 200", usenetID)
+	}
+}
+
+func TestGetNextSyncTag_firstCall(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	tag, err := s.GetNextSyncTag()
+	if err != nil {
+		t.Fatalf("GetNextSyncTag failed: %v", err)
+	}
+	if tag != 1 {
+		t.Errorf("first call: expected tag 1, got %d", tag)
+	}
+}
+
+func TestGetNextSyncTag_increments(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	for i := int64(1); i <= 5; i++ {
+		tag, err := s.GetNextSyncTag()
+		if err != nil {
+			t.Fatalf("iteration %d: GetNextSyncTag failed: %v", i, err)
+		}
+		if tag != i {
+			t.Errorf("iteration %d: expected tag %d, got %d", i, i, tag)
+		}
+	}
+}
+
+func TestGetNextSyncTag_persistsAcrossOpen(t *testing.T) {
+	path := t.TempDir() + "/test_sync_tag.db"
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open failed: %v", err)
+	}
+	tag1, err := s1.GetNextSyncTag()
+	if err != nil {
+		t.Fatalf("first GetNextSyncTag failed: %v", err)
+	}
+	s1.Close()
+
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open failed: %v", err)
+	}
+	defer s2.Close()
+
+	tag2, err := s2.GetNextSyncTag()
+	if err != nil {
+		t.Fatalf("second GetNextSyncTag failed: %v", err)
+	}
+	if tag2 != tag1+1 {
+		t.Errorf("expected tag %d (prev + 1), got %d", tag1+1, tag2)
+	}
+}
+
+func TestListItemDirs_singleFile(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 10, Source: SourceTorrent,
+		Name: "movie.mkv", Path: "movie.mkv",
+		Size: 1000, MimeType: "video/x-matroska",
+	}); err != nil {
+		t.Fatalf("UpsertFile failed: %v", err)
+	}
+
+	dirs, err := s.ListItemDirs()
+	if err != nil {
+		t.Fatalf("ListItemDirs failed: %v", err)
+	}
+
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 item dir, got %d", len(dirs))
+	}
+	if dirs[0].ItemID != 1 {
+		t.Errorf("item_id = %d, want 1", dirs[0].ItemID)
+	}
+	if dirs[0].Source != SourceTorrent {
+		t.Errorf("source = %d, want SourceTorrent (%d)", dirs[0].Source, SourceTorrent)
+	}
+	if dirs[0].Dir != "movie.mkv" {
+		t.Errorf("dir = %q, want %q", dirs[0].Dir, "movie.mkv")
+	}
+}
+
+func TestListItemDirs_multiFileTorrent(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 10, Source: SourceTorrent,
+		Name: "file1.mkv", Path: "Season 1/file1.mkv",
+		Size: 1000, MimeType: "video/x-matroska",
+	}); err != nil {
+		t.Fatalf("UpsertFile failed: %v", err)
+	}
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 11, Source: SourceTorrent,
+		Name: "file2.mkv", Path: "Season 1/file2.mkv",
+		Size: 2000, MimeType: "video/x-matroska",
+	}); err != nil {
+		t.Fatalf("UpsertFile failed: %v", err)
+	}
+
+	dirs, err := s.ListItemDirs()
+	if err != nil {
+		t.Fatalf("ListItemDirs failed: %v", err)
+	}
+
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 distinct dir, got %d", len(dirs))
+	}
+	if dirs[0].Dir != "Season 1" {
+		t.Errorf("dir = %q, want %q", dirs[0].Dir, "Season 1")
+	}
+}
+
+func TestListItemDirs_twoTorrents(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 10, Source: SourceTorrent,
+		Name: "movie1.mkv", Path: "movie1.mkv",
+		Size: 1000, MimeType: "video/x-matroska",
+	}); err != nil {
+		t.Fatalf("UpsertFile failed: %v", err)
+	}
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 2, FileID: 20, Source: SourceTorrent,
+		Name: "movie2.mkv", Path: "TV/movie2.mkv",
+		Size: 2000, MimeType: "video/x-matroska",
+	}); err != nil {
+		t.Fatalf("UpsertFile failed: %v", err)
+	}
+
+	dirs, err := s.ListItemDirs()
+	if err != nil {
+		t.Fatalf("ListItemDirs failed: %v", err)
+	}
+
+	if len(dirs) != 2 {
+		t.Fatalf("expected 2 item dirs, got %d", len(dirs))
+	}
+
+	dirMap := make(map[int64]string)
+	for _, d := range dirs {
+		dirMap[d.ItemID] = d.Dir
+	}
+	if dirMap[1] != "movie1.mkv" {
+		t.Errorf("item 1: expected dir %q, got %q", "movie1.mkv", dirMap[1])
+	}
+	if dirMap[2] != "TV" {
+		t.Errorf("item 2: expected dir %q, got %q", "TV", dirMap[2])
+	}
+}
+
+func TestListItemDirs_subSubDirectory(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 10, Source: SourceTorrent,
+		Name: "file.mkv", Path: "Season 1/Episodes/file.mkv",
+		Size: 1000, MimeType: "video/x-matroska",
+	}); err != nil {
+		t.Fatalf("UpsertFile failed: %v", err)
+	}
+
+	dirs, err := s.ListItemDirs()
+	if err != nil {
+		t.Fatalf("ListItemDirs failed: %v", err)
+	}
+
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 item dir, got %d", len(dirs))
+	}
+	if dirs[0].Dir != "Season 1" {
+		t.Errorf("dir = %q, want first segment %q", dirs[0].Dir, "Season 1")
+	}
+}
+
+func TestPruneBySyncTag_removesNonMatching(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 10, Source: SourceTorrent,
+		Name: "keep.mkv", Path: "keep.mkv", Size: 100,
+		SyncTag: 2,
+	}); err != nil {
+		t.Fatalf("UpsertFile keep failed: %v", err)
+	}
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 2, FileID: 20, Source: SourceTorrent,
+		Name: "stale.mkv", Path: "stale.mkv", Size: 200,
+		SyncTag: 1,
+	}); err != nil {
+		t.Fatalf("UpsertFile stale failed: %v", err)
+	}
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 3, FileID: 30, Source: SourceTorrent,
+		Name: "unsynced.mkv", Path: "unsynced.mkv", Size: 300,
+		SyncTag: 0,
+	}); err != nil {
+		t.Fatalf("UpsertFile unsynced failed: %v", err)
+	}
+
+	n, err := s.PruneBySyncTag(2)
+	if err != nil {
+		t.Fatalf("PruneBySyncTag failed: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("expected 2 rows pruned, got %d", n)
+	}
+
+	keep, err := s.GetFileByPath("keep.mkv")
+	if err != nil {
+		t.Fatalf("GetFileByPath failed: %v", err)
+	}
+	if keep == nil {
+		t.Error("file with matching sync_tag should survive")
+	}
+
+	if stale, _ := s.GetFileByPath("stale.mkv"); stale != nil {
+		t.Error("file with non-matching sync_tag should have been removed")
+	}
+	if unsynced, _ := s.GetFileByPath("unsynced.mkv"); unsynced != nil {
+		t.Error("file with sync_tag=0 should have been removed")
+	}
+}
+
+func TestPruneBySyncTag_emptyStore(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	n, err := s.PruneBySyncTag(1)
+	if err != nil {
+		t.Fatalf("PruneBySyncTag failed: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("empty store: expected 0 rows pruned, got %d", n)
+	}
+}
+
+func TestPruneBySyncTag_invalidTag(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	_, err := s.PruneBySyncTag(0)
+	if err == nil {
+		t.Error("expected error for tag 0")
+	}
+	_, err = s.PruneBySyncTag(-1)
+	if err == nil {
+		t.Error("expected error for tag -1")
+	}
+}
+
+func TestPruneBySyncTag_batchMultiple(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	for i := int64(0); i < 300; i++ {
+		if err := s.UpsertFile(FileRecord{
+			ItemID: i, FileID: i, Source: SourceTorrent,
+			Name: fmt.Sprintf("file%d.mkv", i),
+			Path: fmt.Sprintf("file%d.mkv", i),
+			Size: 100, SyncTag: 1,
+		}); err != nil {
+			t.Fatalf("UpsertFile %d failed: %v", i, err)
+		}
+	}
+
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 999, FileID: 999, Source: SourceTorrent,
+		Name: "survivor.mkv", Path: "survivor.mkv",
+		Size: 100, SyncTag: 2,
+	}); err != nil {
+		t.Fatalf("UpsertFile survivor failed: %v", err)
+	}
+
+	n, err := s.PruneBySyncTag(2)
+	if err != nil {
+		t.Fatalf("PruneBySyncTag failed: %v", err)
+	}
+	if n != 300 {
+		t.Errorf("expected 300 rows pruned, got %d", n)
+	}
+
+	survivor, err := s.GetFileByPath("survivor.mkv")
+	if err != nil {
+		t.Fatalf("GetFileByPath failed: %v", err)
+	}
+	if survivor == nil {
+		t.Error("survivor file with sync_tag=2 should survive")
 	}
 }
