@@ -120,6 +120,20 @@ rclone mount warpbox: /mnt/warpbox \
 
 A flag-by-flag explanation of each rclone setting is in [`docs/rclone-config.md`](docs/rclone-config.md).
 
+## Troubleshooting
+
+Having problems? Check [`docs/troubleshooting.md`](docs/troubleshooting.md) for fixes to common issues.
+
+## Media Server Setup
+
+How to add the mount to Plex, Jellyfin, Emby, and Infuse: [`docs/media-servers.md`](docs/media-servers.md).
+
+## Configuration
+
+Every config key with defaults, interactions, and suggested profiles: [`docs/config-tuning.md`](docs/config-tuning.md).
+
+The [`config.yml.example`](config.yml.example) documents all options inline with comments.
+
 ### Build from Source
 
 Requires Go 1.26.2+:
