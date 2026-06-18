@@ -1,0 +1,45 @@
+name: Bug Report
+description: Something is broken
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: input
+    attributes:
+      label: Warpbox version
+      placeholder: "e.g. v1.2.3 or dev"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Docker
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...`n2. ...`n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+      placeholder: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Actual behavior
+      placeholder: What actually happened?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Relevant logs
+      description: Paste log output from `/logs/` or terminal output
+      render: shell

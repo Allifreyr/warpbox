@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/mainlink0435/warpbox/security/advisories/new
+    about: Do not open a public issue — use private reporting instead.

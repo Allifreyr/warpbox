@@ -1,16 +1,20 @@
-# Contributing to Warpbox
+# Contributing
 
-Thank you for considering contributing! This document outlines how to get started.
+Bug fixes are welcome. Feature requests and feature PRs are not currently
+being sought — open a discussion first if you're unsure.
 
-## Reporting Issues
+## Before you start
 
-Report bugs and feature requests via [GitHub Issues](https://github.com/mainlink0435/warpbox/issues).
+Always open an issue and get maintainer approval before submitting a PR.
+This avoids wasted effort on something that won't be merged.
 
-When filing a bug, include:
-- The version you're running (`warpbox --version` or check the startup log)
-- Your operating system and architecture
+## Reporting bugs
+
+Use the bug report template when filing an issue. Include:
+- Warpbox version (`warpbox --version`)
+- Your OS and architecture
 - Steps to reproduce
-- Relevant log output (available at `/logs/` when the server is running)
+- Relevant logs from `/logs/`
 
 ## Development Setup
 
@@ -46,10 +50,10 @@ When filing a bug, include:
 
 ## Pull Request Process
 
-1. Create a feature branch from `main`.
-2. Make your changes, ensuring all tests pass.
-3. Open a pull request against `main`.
-4. A maintainer will review and merge.
+1. Open an issue describing the bug.
+2. Fork and create a feature branch from `main`.
+3. Make your changes, ensure all tests pass.
+4. Open a pull request against `main`, referencing the issue.
 
 ## License
 

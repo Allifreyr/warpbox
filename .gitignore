@@ -10,7 +10,7 @@ go.work
 go.work.sum
 
 # Config
-config.yml
+/config.yml
 
 # Runtime data directory (config.yml + warpbox.db)
 data/
