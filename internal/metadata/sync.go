@@ -25,6 +25,8 @@ type SyncWorker struct {
 	queue       *throttle.Queue
 	interval    time.Duration
 	limit       int
+	retryAttempts int
+	retryBackoff  time.Duration
 	lastError   error
 	lastSuccess time.Time
 
@@ -46,6 +48,8 @@ type SyncStatus struct {
 
 // Status returns the outcome of the most recent sync cycle.
 func (w *SyncWorker) Status() SyncStatus {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return SyncStatus{
 		LastSuccess: w.lastSuccess,
 		LastError:   errorString(w.lastError),
@@ -55,13 +59,17 @@ func (w *SyncWorker) Status() SyncStatus {
 // NewSyncWorker creates a new metadata sync worker.
 // interval is how often to sync (e.g. 5 minutes).
 // limit is the max number of files to fetch per sync.
-func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, interval time.Duration, limit int) *SyncWorker {
+// retryAttempts is the max number of retries for transient API errors.
+// retryBackoff is the base backoff duration (exponential: 1x, 2x, 4x).
+func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, interval time.Duration, limit int, retryAttempts int, retryBackoff time.Duration) *SyncWorker {
 	return &SyncWorker{
-		store:    store,
-		client:   client,
-		queue:    queue,
-		interval: interval,
-		limit:    limit,
+		store:          store,
+		client:         client,
+		queue:          queue,
+		interval:       interval,
+		limit:          limit,
+		retryAttempts:  retryAttempts,
+		retryBackoff:   retryBackoff,
 	}
 }
 
@@ -256,29 +264,67 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 	torrentCh := make(chan torrentResult, 1)
 	usenetCh := make(chan usenetResult, 1)
 
-	// Fetch torrents.
+	// Fetch torrents with retry for transient errors (502, timeout, HTML error pages).
 	w.queue.Enqueue(throttle.Request{
 		Label: "metadata sync: ListTorrents",
 		Execute: func(ctx context.Context) error {
-			torrents, err := w.client.ListTorrents(ctx, torbox.ListFilesParams{
-				BypassCache: false,
-				Offset:      0,
-				Limit:       w.limit,
-			})
+			var torrents []torbox.Torrent
+			var err error
+			for attempt := 0; attempt <= w.retryAttempts; attempt++ {
+				if attempt > 0 {
+					select {
+					case <-ctx.Done():
+						torrentCh <- torrentResult{nil, ctx.Err()}
+						return ctx.Err()
+					case <-time.After(w.retryBackoff * time.Duration(1<<(attempt-1))):
+					}
+				}
+				torrents, err = w.client.ListTorrents(ctx, torbox.ListFilesParams{
+					BypassCache: false,
+					Offset:      0,
+					Limit:       w.limit,
+				})
+				if err == nil || !torbox.IsRetryable(err) {
+					break
+				}
+				slog.Debug("metadata sync: ListTorrents failed, retrying",
+					"attempt", attempt+1,
+					"error", err,
+				)
+			}
 			torrentCh <- torrentResult{torrents, err}
 			return err
 		},
 	})
 
-	// Fetch Usenet downloads (shares the throttle queue).
+	// Fetch Usenet downloads with retry for transient errors.
 	w.queue.Enqueue(throttle.Request{
 		Label: "metadata sync: ListUsenet",
 		Execute: func(ctx context.Context) error {
-			usenet, err := w.client.ListUsenet(ctx, torbox.ListFilesParams{
-				BypassCache: false,
-				Offset:      0,
-				Limit:       w.limit,
-			})
+			var usenet []torbox.Torrent
+			var err error
+			for attempt := 0; attempt <= w.retryAttempts; attempt++ {
+				if attempt > 0 {
+					select {
+					case <-ctx.Done():
+						usenetCh <- usenetResult{nil, ctx.Err()}
+						return ctx.Err()
+					case <-time.After(w.retryBackoff * time.Duration(1<<(attempt-1))):
+					}
+				}
+				usenet, err = w.client.ListUsenet(ctx, torbox.ListFilesParams{
+					BypassCache: false,
+					Offset:      0,
+					Limit:       w.limit,
+				})
+				if err == nil || !torbox.IsRetryable(err) {
+					break
+				}
+				slog.Debug("metadata sync: ListUsenet failed, retrying",
+					"attempt", attempt+1,
+					"error", err,
+				)
+			}
 			usenetCh <- usenetResult{usenet, err}
 			return err
 		},
@@ -359,10 +405,12 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 	} else if usenetRes.err != nil {
 		syncErr = usenetRes.err
 	}
+	w.mu.Lock()
 	w.lastError = syncErr
 	if syncErr == nil {
 		w.lastSuccess = time.Now()
 	}
+	w.mu.Unlock()
 
 	// Prune stale records using the sync tag. Records with sync_tag != the
 	// current tag were not touched by this sync and are safe to remove.

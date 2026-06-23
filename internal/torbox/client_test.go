@@ -317,6 +317,61 @@ func TestDoSanitizesURLFromNetworkError(t *testing.T) {
 	}
 }
 
+func TestIsRetryable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"429 rate limit", fmt.Errorf("torbox: unexpected status 429"), true},
+		{"500 server error", fmt.Errorf("torbox: unexpected status 500"), true},
+		{"502 bad gateway", fmt.Errorf("torbox: unexpected status 502"), true},
+		{"503 unavailable", fmt.Errorf("torbox: unexpected status 503"), true},
+		{"504 gateway timeout", fmt.Errorf("torbox: unexpected status 504"), true},
+		{"context deadline exceeded", fmt.Errorf("torbox: request GET /v1/api/usenet/mylist failed: context deadline exceeded (Client.Timeout exceeded while awaiting headers)"), true},
+		{"Client.Timeout", fmt.Errorf("torbox: request GET failed: Client.Timeout"), true},
+		{"HTML response", fmt.Errorf("torbox: decoding torrents response: invalid character '<' looking for beginning of value"), true},
+		{"connection refused", fmt.Errorf("torbox: request GET failed: dial tcp: connection refused"), true},
+		{"no such host", fmt.Errorf("torbox: request GET failed: dial tcp: lookup api.torbox.app: no such host"), true},
+		{"i/o timeout", fmt.Errorf("torbox: request GET failed: dial tcp: i/o timeout"), true},
+		{"EOF", fmt.Errorf("torbox: request GET failed: unexpected EOF"), true},
+		{"401 unauthorized", fmt.Errorf("torbox: unexpected status 401"), false},
+		{"404 not found", fmt.Errorf("torbox: unexpected status 404"), false},
+		{"400 bad request", fmt.Errorf("torbox: unexpected status 400"), false},
+		{"API-level error", fmt.Errorf("torbox torrents API error: invalid api_key"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRetryable(tt.err); got != tt.want {
+				t.Errorf("IsRetryable(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHTMLResponseCausesJSONError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// TorBox sometimes returns Cloudflare HTML pages with HTTP 200.
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><head><title>502 Bad Gateway</title></head><body>Cloudflare error</body></html>`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "key")
+	_, err := client.ListTorrents(context.Background(), ListFilesParams{})
+	if err == nil {
+		t.Fatal("expected error for HTML response with status 200, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid character '<'") {
+		t.Errorf("error should mention invalid character '<', got: %v", err)
+	}
+	if !IsRetryable(err) {
+		t.Errorf("HTML response error should be retryable, got: %v", err)
+	}
+}
+
 func boolPtr(b bool) *bool {
 	return &b
 }

@@ -66,6 +66,8 @@ type LoggingConfig struct {
 type SyncConfig struct {
 	IntervalMinutes int `yaml:"interval_minutes"` // Default: 5
 	Limit           int `yaml:"limit"`            // Max files to fetch per sync; default: 5000
+	RetryAttempts   *int `yaml:"retry_attempts"`   // Max retries for sync API errors; nil→default 3
+	RetryBackoff    *int `yaml:"retry_backoff"`    // Base backoff seconds for sync retries; nil→default 1
 }
 
 // StatsConfig holds time-series stats collection settings.
@@ -134,6 +136,14 @@ func setDefaults(c *Config) {
 	}
 	if c.Sync.Limit == 0 {
 		c.Sync.Limit = 5000
+	}
+	if c.Sync.RetryAttempts == nil {
+		n := 3
+		c.Sync.RetryAttempts = &n
+	}
+	if c.Sync.RetryBackoff == nil {
+		n := 1
+		c.Sync.RetryBackoff = &n
 	}
 	if c.Stats.IntervalSeconds == 0 {
 		c.Stats.IntervalSeconds = 60
@@ -219,6 +229,18 @@ func validate(c *Config) error {
 	}
 	if c.Sync.Limit < 1 || c.Sync.Limit > 100000 {
 		return fmt.Errorf("sync.limit must be 1–100000, got %d", c.Sync.Limit)
+	}
+	if c.Sync.RetryAttempts != nil {
+		r := *c.Sync.RetryAttempts
+		if r < 0 || r > 10 {
+			return fmt.Errorf("sync.retry_attempts must be 0–10, got %d", r)
+		}
+	}
+	if c.Sync.RetryBackoff != nil {
+		r := *c.Sync.RetryBackoff
+		if r < 1 || r > 60 {
+			return fmt.Errorf("sync.retry_backoff must be 1–60, got %d", r)
+		}
 	}
 	if c.Stats.IntervalSeconds < 10 || c.Stats.IntervalSeconds > 3600 {
 		return fmt.Errorf("stats.interval_seconds must be 10–3600, got %d", c.Stats.IntervalSeconds)

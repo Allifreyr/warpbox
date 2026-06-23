@@ -113,12 +113,12 @@ func TestBuildFileRecordSanitizesPath(t *testing.T) {
 }
 
 func TestSyncWorker_Stop_BeforeStart(t *testing.T) {
-	w := NewSyncWorker(nil, nil, nil, time.Minute, 0)
+	w := NewSyncWorker(nil, nil, nil, time.Minute, 0, 3, time.Second)
 	w.Stop()
 }
 
 func TestSyncWorker_Restart_BeforeStart(t *testing.T) {
-	w := NewSyncWorker(nil, nil, nil, time.Minute, 0)
+	w := NewSyncWorker(nil, nil, nil, time.Minute, 0, 3, time.Second)
 	w.Restart()
 }
 
@@ -144,7 +144,7 @@ func newTestSyncEnv(t *testing.T) (*SyncWorker, *httptest.Server, *Store, func()
 	qCtx, qCancel := context.WithCancel(context.Background())
 	queue.Start(qCtx)
 
-	sw := NewSyncWorker(store, client, queue, time.Hour, 100)
+	sw := NewSyncWorker(store, client, queue, time.Hour, 100, 3, time.Second)
 
 	cleanup := func() {
 		qCancel()
@@ -195,6 +195,82 @@ func TestSyncWorker_StartStop_Lifecycle(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("worker goroutine did not exit after Stop")
 	}
+}
+
+func newTestSyncEnvWithHandler(t *testing.T, handler http.HandlerFunc, retryAttempts int, retryBackoff time.Duration) (*SyncWorker, func()) {
+	t.Helper()
+
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(handler)
+
+	client := torbox.NewClient("test-api-key")
+	client.SetBaseURL(ts.URL)
+	client.SetHTTPClient(&http.Client{})
+
+	queue := throttle.NewQueue(99999)
+	qCtx, qCancel := context.WithCancel(context.Background())
+	queue.Start(qCtx)
+
+	sw := NewSyncWorker(store, client, queue, time.Hour, 100, retryAttempts, retryBackoff)
+
+	cleanup := func() {
+		qCancel()
+		ts.Close()
+		store.Close()
+	}
+
+	return sw, cleanup
+}
+
+func TestSyncWorker_RetryOnTransientErrors(t *testing.T) {
+	t.Run("retries succeed after transient failures", func(t *testing.T) {
+		callCount := 0
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Fail on the first call (torrents attempt 0), succeed thereafter.
+			if callCount < 1 {
+				callCount++
+				w.WriteHeader(http.StatusBadGateway)
+				w.Write([]byte("error code: 502"))
+				return
+			}
+			callCount++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"data":[],"success":true}`))
+		})
+
+		sw, cleanup := newTestSyncEnvWithHandler(t, handler, 1, 100*time.Millisecond)
+		defer cleanup()
+
+		sw.SyncNow()
+
+		if sw.Status().LastError != "" {
+			t.Fatalf("expected sync to succeed after retry, got error: %s", sw.Status().LastError)
+		}
+		if sw.Status().LastSuccess.IsZero() {
+			t.Fatal("expected LastSuccess to be set after successful sync")
+		}
+	})
+
+	t.Run("no retry means failure on first error", func(t *testing.T) {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte("error code: 502"))
+		})
+
+		sw, cleanup := newTestSyncEnvWithHandler(t, handler, 0, time.Second)
+		defer cleanup()
+
+		sw.SyncNow()
+
+		if sw.Status().LastError == "" {
+			t.Fatal("expected sync to fail when retry_attempts is 0")
+		}
+	})
 }
 
 func TestSyncWorker_Restart_Lifecycle(t *testing.T) {

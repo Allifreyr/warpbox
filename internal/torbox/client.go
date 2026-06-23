@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -170,6 +171,21 @@ func (c *Client) listGeneric(ctx context.Context, endpoint, label string, params
 
 	var env apiResponse[[]Torrent]
 	if err := json.Unmarshal(body, &env); err != nil {
+		if len(body) > 0 && body[0] == '<' {
+			snippet := body
+			if len(snippet) > 200 {
+				snippet = snippet[:200]
+			}
+			slog.Warn("torbox "+label+": expected JSON, got non-JSON response",
+				"endpoint", endpoint,
+				"status", 200,
+				"body_preview", string(snippet),
+			)
+			slog.Debug("torbox "+label+": non-JSON response body",
+				"endpoint", endpoint,
+				"body", truncateBody(body),
+			)
+		}
 		return nil, fmt.Errorf("torbox: decoding %s response: %w", label, err)
 	}
 
@@ -226,6 +242,23 @@ func (c *Client) GetDownloadURL(ctx context.Context, torrentID, fileID int64, re
 
 	var env apiResponse[string]
 	if err := json.Unmarshal(body, &env); err != nil {
+		if len(body) > 0 && body[0] == '<' {
+			snippet := body
+			if len(snippet) > 200 {
+				snippet = snippet[:200]
+			}
+			slog.Warn("torbox download_url: expected JSON, got non-JSON response",
+				"torrent_id", torrentID,
+				"file_id", fileID,
+				"status", 200,
+				"body_preview", string(snippet),
+			)
+			slog.Debug("torbox download_url: non-JSON response body",
+				"torrent_id", torrentID,
+				"file_id", fileID,
+				"body", truncateBody(body),
+			)
+		}
 		return "", fmt.Errorf("torbox: decoding response: %w", err)
 	}
 
@@ -266,6 +299,23 @@ func (c *Client) GetUsenetDownloadURL(ctx context.Context, usenetID, fileID int6
 
 	var env apiResponse[string]
 	if err := json.Unmarshal(body, &env); err != nil {
+		if len(body) > 0 && body[0] == '<' {
+			snippet := body
+			if len(snippet) > 200 {
+				snippet = snippet[:200]
+			}
+			slog.Warn("torbox usenet_download_url: expected JSON, got non-JSON response",
+				"usenet_id", usenetID,
+				"file_id", fileID,
+				"status", 200,
+				"body_preview", string(snippet),
+			)
+			slog.Debug("torbox usenet_download_url: non-JSON response body",
+				"usenet_id", usenetID,
+				"file_id", fileID,
+				"body", truncateBody(body),
+			)
+		}
 		return "", fmt.Errorf("torbox: decoding usenet response: %w", err)
 	}
 
@@ -304,6 +354,19 @@ func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 
 	var env apiResponse[UserInfo]
 	if err := json.Unmarshal(body, &env); err != nil {
+		if len(body) > 0 && body[0] == '<' {
+			snippet := body
+			if len(snippet) > 200 {
+				snippet = snippet[:200]
+			}
+			slog.Warn("torbox user/me: expected JSON, got non-JSON response",
+				"status", 200,
+				"body_preview", string(snippet),
+			)
+			slog.Debug("torbox user/me: non-JSON response body",
+				"body", truncateBody(body),
+			)
+		}
 		return nil, fmt.Errorf("torbox: decoding user/me response: %w", err)
 	}
 
@@ -368,4 +431,22 @@ func truncateBody(body []byte) string {
 		return string(body)
 	}
 	return string(body[:maxLen]) + "... (truncated)"
+}
+
+// IsRetryable reports whether a TorBox API error is likely transient and
+// worth retrying with exponential backoff. Returns false for nil errors.
+func IsRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "unexpected status 429") ||
+		strings.Contains(s, "unexpected status 5") ||
+		strings.Contains(s, "context deadline exceeded") ||
+		strings.Contains(s, "Client.Timeout") ||
+		strings.Contains(s, "invalid character '<'") ||
+		strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "no such host") ||
+		strings.Contains(s, "i/o timeout") ||
+		strings.Contains(s, "EOF")
 }

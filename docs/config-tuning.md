@@ -26,6 +26,8 @@ simultaneous streams. The suggestions below are starting points, not rules.
 | `cache.circuit_breaker_max_entries` | 2000 | 50–20000 | Memory is tight (lower), or you have many active torrents (raise) |
 | `cache.cleanup_interval_seconds` | 60 | 10–3600 | Stats recording also uses this interval — see interactions below |
 | `sync.interval_minutes` | 5 | 1–1440 | New content shows up too slowly for your workflow |
+| `sync.retry_attempts` | 3 | 0–10 | TorBox API is flaky during sync — increase for more resilience |
+| `sync.retry_backoff` | 1s | 1–60s | Longer pauses between retries to avoid hammering the API |
 | `sync.limit` | 5000 | 1–100000 | Your library is larger than 5000 files and some aren't appearing |
 | `stats.retention_hours` | 24 | 1–720 | You want longer history on the sparkline charts |
 | `stats.chart_minutes` | 60 | 1–1440 | You want the landing page chart to show a shorter or longer window |
@@ -55,6 +57,16 @@ or removed files. Rclone's `--poll-interval` controls how often rclone checks
 warpbox for changes. New files only appear in the mount after both intervals
 have elapsed. Keeping them roughly equal (both at 5 minutes, for example) gives
 predictable behaviour.
+
+### Sync retry
+
+When the TorBox API returns transient errors (502, timeout, HTML error pages) during
+a sync cycle, the sync worker retries `ListTorrents` and `ListUsenet` up to
+`sync.retry_attempts` times with exponential backoff: `retry_backoff * 1s, * 2s, * 4s`.
+A value of 0 disables retries — the sync fails immediately on the first transient error.
+
+The retry only applies to errors that `torbox.IsRetryable()` considers transient.
+Permanent errors (401 unauthorized, 404 not found, API-level errors) are not retried.
 
 ### CDN URL TTL
 

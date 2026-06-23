@@ -101,6 +101,16 @@ sync:
   # Must be 1–100000. Default: 5000
   # limit: 5000
 
+  # Maximum number of retry attempts for transient API errors (502, timeout,
+  # HTML error pages) during sync. 0 means no retry.
+  # Default: 3
+  # retry_attempts: 3
+
+  # Base backoff in seconds between sync retry attempts.
+  # Exponential: backoff * 1s, * 2s, * 4s for attempts 1, 2, 3.
+  # Must be 1–60. Default: 1
+  # retry_backoff: 1
+
 library:
   # Virtual library paths: filtered views over the raw TorBox file tree.
   # Each virtual path has its own regex filters that determine which

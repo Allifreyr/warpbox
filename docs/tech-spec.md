@@ -277,6 +277,7 @@ Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
      - Invalidate cached CDN URL (set to "" with past expiry)
      - Enter hang/poll mode (see below)
    - **Other non-2xx:** `502 Bad Gateway` to client
+   - **403/404 exhausted (no retries remaining):** File key is added to the negative cache with `NegativeCacheTTLSeconds` TTL. Subsequent requests for this file skip the API and enter hang/poll mode directly, preventing retry storms.
    - **200/206:** Proceed to streaming
 
 5. **CDN connection semaphore.** Before proxy streaming, `AcquireCDNConn()` blocks until a slot is available. `ReleaseCDNConn()` returns the slot when done. Capacity: `max_cdn_connections` (default 4). Channel-based with pre-filled tokens.
@@ -354,6 +355,22 @@ The generic type parameter allows type-safe decoding. All endpoints parse into `
 | GET | `/v1/api/usenet/requestdl` | Query param `?token=<key>` | `GetUsenetDownloadURL()` | Get CDN download URL for a Usenet file |
 | GET | `/v1/api/user/me` | `Authorization: Bearer <key>` | `GetUserInfo()` | Get authenticated user's account details |
 
+### IsRetryable
+
+`IsRetryable(err error) bool` is an exported function that checks whether a TorBox
+API error is likely transient and worth retrying with exponential backoff. It returns
+`true` for:
+
+- HTTP 429 (rate limit)
+- HTTP 5xx (server errors)
+- `context deadline exceeded` and `Client.Timeout`
+- Non-JSON responses (`invalid character '<'`) — Cloudflare error pages returned with HTTP 200
+- Network errors: `connection refused`, `no such host`, `i/o timeout`, `EOF`
+
+Returns `false` for `nil` errors, 4xx (except 429), and application-level API errors.
+Used by both the CDN URL fetch pipeline (`getCDNURLWithRetry`) and the metadata sync
+worker to decide whether to retry a failed API call.
+
 ### Auth Token Asymmetry
 
 - **`/mylist` and `/user/me`:** API key sent as `Authorization: Bearer <key>` HTTP header.
@@ -401,9 +418,9 @@ The core request executor:
 ### Error Handling
 
 - Network errors → `"torbox: request failed: <error>"`
-- Non-200 status → `"torbox: unexpected status <code>"`
+- Non-200 status → `"torbox: unexpected status <code>"` (body logged at WARN, truncated to 512 bytes)
 - API-level errors → `"torbox <endpoint> API error: <detail>"` (from `env.Error` field)
-- Response body is always logged at WARN level for non-200 responses, truncated to 512 bytes
+- **Non-JSON responses with HTTP 200:** When `json.Unmarshal` fails and the response body starts with `<` (indicating an HTML error page, e.g. Cloudflare), a WARN log is emitted with `"expected JSON, got non-JSON response"` and a 200-byte body preview. The full truncated body is logged at DEBUG.
 - URL query parameters (containing the API token) are NOT included in log messages — only `req.URL.Path` is logged
 
 
@@ -415,7 +432,7 @@ The core request executor:
 
 `SyncWorker` manages the periodic TorBox → SQLite synchronisation loop:
 
-- **`NewSyncWorker(store, client, queue, interval, limit)`** — stores references. Does not start.
+- **`NewSyncWorker(store, client, queue, interval, limit, retryAttempts, retryBackoff)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. Does not start.
 - **`Start(ctx)`** — stores `ctx` as `parentCtx`, creates a derived `cancelCtx`, calls `runLoop(ctx)`, closes `loopDone` channel on exit.
 - **`Stop()`** — calls the cancel function on the current loop, waits up to 90 seconds for `loopDone` to close. Safe to call multiple times or before `Start`.
 - **`Restart()`** — calls `Stop()`, creates a new derived context from `parentCtx`, launches `runLoop` in a new goroutine.
@@ -433,9 +450,11 @@ The core request executor:
 
 **1. Snapshot for change detection.** If `OnItemsAdded` or `OnItemsRemoved` hooks are configured, `store.ListItemDirs()` is called before the sync to capture the current item set.
 
-**2. Parallel fetch.** Two API calls are enqueued via the throttle queue simultaneously:
-   - `ListTorrents(ctx, {BypassCache: false, Offset: 0, Limit: w.limit})`
-   - `ListUsenet(ctx, {BypassCache: false, Offset: 0, Limit: w.limit})`
+**2. Parallel fetch with retry.** Two API calls are enqueued via the throttle queue simultaneously. Each call uses exponential backoff retry on transient errors:
+   - `ListTorrents(ctx, ...)` — retries up to `sync.retry_attempts` times with backoff `sync.retry_backoff * 1s, * 2s, * 4s, ...`
+   - `ListUsenet(ctx, ...)` — same retry pattern
+   - Only transient errors (defined by `torbox.IsRetryable()`) trigger a retry — non-retryable errors (401, 404, API-level errors) bail immediately
+   - Retry is gated by the caller's context timeout (60s for `SyncNow()`), not a fixed wall-clock limit
    - Results collected on channels. Errors are logged but do not abort — usenet may succeed if torrents fail.
 
 **3. Sync tag reservation.** `store.GetNextSyncTag()` atomically increments a counter in the `meta` table:
@@ -768,6 +787,8 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 |-----|------|---------|------------|-------------|
 | `interval_minutes` | int | `5` | 1–1440 | Metadata sync interval |
 | `limit` | int | `5000` | 1–100000 | Max files per sync cycle |
+| `retry_attempts` | int (pointer) | `3` | 0–10 | Max sync API retry attempts on transient errors (0 = no retry) |
+| `retry_backoff` | int (pointer) | `1` | 1–60 | Sync retry exponential backoff base (seconds) |
 
 #### 7. `stats`
 | Key | Type | Default | Validation | Description |

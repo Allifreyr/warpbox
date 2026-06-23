@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Configurable sync retry: `sync.retry_attempts` and `sync.retry_backoff` control exponential backoff for transient API errors during metadata sync
+- `torbox.IsRetryable()` function for unified transient error detection (429, 5xx, timeouts, HTML responses, network errors)
+- HTML response body logging on JSON unmarshal failure — non-JSON responses (Cloudflare error pages) are logged at WARN with preview and DEBUG with full body
+- CDN 403/404 failures after repair exhaustion are cached in the negative cache, preventing retry storms from burning TorBox API calls
+
+### Fixed
+- Pre-existing data race in `Status()`/`syncOnce()` on `lastError`/`lastSuccess` — now protected by mutex
+
 ## [v0.5.3] - 2026-06-19
 
 ### Fixed

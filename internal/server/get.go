@@ -19,6 +19,7 @@ import (
 	"github.com/mainlink0435/warpbox/internal/library"
 	"github.com/mainlink0435/warpbox/internal/metadata"
 	"github.com/mainlink0435/warpbox/internal/throttle"
+	"github.com/mainlink0435/warpbox/internal/torbox"
 )
 
 // ---------------------------------------------------------------------------
@@ -236,6 +237,29 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		// Check for non-success status that won't be repaired.
 		if proxyResp.StatusCode != http.StatusOK && proxyResp.StatusCode != http.StatusPartialContent {
 			proxyResp.Body.Close()
+
+			// If the CDN returned 403/404 even after refreshing the URL, the
+			// file is not available. Cache this failure so subsequent requests
+			// hit the negative cache and skip the API entirely instead of
+			// burning TorBox calls.
+			if (proxyResp.StatusCode == http.StatusForbidden || proxyResp.StatusCode == http.StatusNotFound) &&
+				attempt == maxAttempts-1 {
+				key := cdnCacheKey(file.Source, file.ItemID, file.FileID)
+				ttl := time.Duration(s.cfg.NegativeCacheTTLSeconds) * time.Second
+				s.negativeCacheMu.Lock()
+				s.negativeCache[key] = &negativeCacheEntry{
+					err:       fmt.Errorf("CDN returned %d after %d repair attempts", proxyResp.StatusCode, maxAttempts),
+					expiresAt: time.Now().Add(ttl),
+				}
+				s.negativeCacheMu.Unlock()
+				slog.Warn("CDN proxy exhausted, caching failure in negative cache",
+					"path", file.Path,
+					"status", proxyResp.StatusCode,
+					"attempts", maxAttempts,
+					"negative_cache_ttl", ttl.Seconds(),
+				)
+			}
+
 			slog.Error("GET: CDN returned non-success",
 				"path", file.Path,
 				"status", proxyResp.StatusCode,
@@ -405,10 +429,9 @@ func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID i
 			return res.url, nil
 		}
 
-		// Check if the error is retryable. 429 and 5xx are retryable.
-		errStr := res.err.Error()
-		isRetryable := strings.Contains(errStr, "unexpected status 429") ||
-			strings.Contains(errStr, "unexpected status 5")
+		// Check if the error is retryable. 429, 5xx, timeouts, HTML
+		// responses, and network errors can all be transient.
+		isRetryable := torbox.IsRetryable(res.err)
 
 		if !isRetryable || attempt >= maxRetries {
 			// Non-retryable or out of attempts — record and return.
@@ -429,7 +452,7 @@ func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID i
 		wait := baseBackoff * (1 << attempt)
 		// 429 rate-limit errors get a long 30s backoff. Once TorBox rate-limits,
 		// we need to give it breathing room rather than retrying aggressively.
-		if strings.Contains(errStr, "unexpected status 429") {
+		if strings.Contains(res.err.Error(), "unexpected status 429") {
 			wait = 30 * time.Second
 		}
 		slog.Warn("CDN URL fetch failed, retrying with backoff",

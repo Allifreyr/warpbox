@@ -147,3 +147,19 @@ This page documents all significant architectural and technical decisions made d
 - **Rationale:** Each clone has its own `.opencode/` directory and independent session pool. The user still must manually `cd` into the clone and start a new opencode session (the agent cannot do this), but sessions for different issues do not interfere.
 - **Alternatives considered:** Fixing worktrees by symlinking `.opencode/` per worktree (brittle, no community precedent); staying with worktrees and accepting session collision (confusing); documenting `cd` as the only manual step (accepted).
 - **Outcome:** Internal instructions updated from "Worktree Lifecycle" to "Clone Lifecycle".
+
+## D-021: Extend retry, IsRetryable(), and negative cache for sync and CDN proxy
+
+- **Date:** 2026-06-20
+- **Context:** Production logs showed three failure modes during TorBox API outages:
+  1. Sync failures on 502/timeout/HTML responses with zero retry — stale metadata for 5+ minutes between sync intervals.
+  2. Cloudflare error pages returned with HTTP 200 produced cryptic JSON parse errors with no body visibility in logs.
+  3. CDN 403/404 after repair exhaustion triggered infinite Plex retry storms (120+ API calls for one file in ~45 seconds).
+- **Decision:**
+  1. Add exponential backoff retry to metadata sync (`ListTorrents`/`ListUsenet`) with configurable `sync.retry_attempts` (default 3) and `sync.retry_backoff` (default 1s).
+  2. Extract unified `IsRetryable()` function used by both CDN fetch and sync retry — single source of truth for what constitutes a transient error.
+  3. Add HTML body logging on JSON unmarshal failure — WARN with 200-char preview, DEBUG with full truncated body.
+  4. Cache CDN 403/404 failures in the negative cache after all repair attempts are exhausted, so subsequent Plex retries skip the API entirely.
+- **Rationale:** Extends the existing D-008 retry/backoff/negative-cache pattern to (a) the sync path and (b) the CDN proxy path. The unified `IsRetryable()` prevents retry-logic drift between the two call sites.
+- **Config:** `sync.retry_backoff` (1–60, default 1), `sync.retry_attempts` (0–10, default 3). Existing `negative_cache_ttl_seconds` and `cdn_url_retry_*` keys are reused.
+- **Implementation:** `internal/torbox/client.go` (IsRetryable, HTML logging), `internal/metadata/sync.go` (retry), `internal/server/get.go` (CDN 404 negative cache).
