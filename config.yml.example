@@ -103,6 +103,10 @@ sync:
   # calls but risks hitting the cap. Must be 1–10000. Default: 5000
   # list_page_size: 5000
 
+  # Bypass TorBox's server-side cache when fetching the torrent list.
+  # Default: false
+  # bypass_cache: false
+
   # Maximum number of retry attempts for transient API errors (502, timeout,
   # HTML error pages) during sync. 0 means no retry.
   # Default: 3
