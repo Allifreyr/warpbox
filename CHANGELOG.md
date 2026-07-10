@@ -5,6 +5,16 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.8.0] - 2026-07-10
+
+### Added
+- TorBox dashboard tag-based filter override. Allows users to override automatic movie/TV virtual path classification by tagging torrents on the TorBox dashboard (e.g. with `forcedtv`). Tags are processed and matched at regex-filtering time only, preserving original virtual paths and mount directory stability.
+- Configurable `library.override_tags` setting (defaults to `["forcedtv"]`) to control which dashboard tags participate in virtual path matching.
+
+### Changed
+- **Database schema v3:** Added `filter_tags` text column to the `files` table. Older schemas are automatically recreated on first startup, preserving the self-healing behavior of the database cache.
+- `UpsertFile` and `ListDir` database queries updated to include the `filter_tags` field.
+
 ## [v0.7.0] - 2026-07-09
 
 ### Added
@@ -112,7 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.0...HEAD
+[Unreleased]: /compare/v0.8.0...HEAD
+[v0.8.0]: /compare/v0.7.0...v0.8.0
 [v0.7.0]: /compare/v0.6.0...v0.7.0
 [v0.6.0]: /compare/v0.5.4...v0.6.0
 
