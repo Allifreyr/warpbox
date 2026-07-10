@@ -78,10 +78,16 @@ func (f *Filter) Apply(records []metadata.FileRecord) []metadata.FileRecord {
 
 	for _, rec := range records {
 		dir := ExtractDirectory(rec.Path)
-		ok, cached := dirMatchCache[dir]
+		// Build the match string: directory + filter tags for regex testing only.
+		// The stored path is never modified — this only affects classification.
+		matchStr := dir
+		if rec.FilterTags != "" {
+			matchStr = dir + " " + rec.FilterTags
+		}
+		ok, cached := dirMatchCache[matchStr]
 		if !cached {
-			ok = f.MatchDirectory(dir)
-			dirMatchCache[dir] = ok
+			ok = f.MatchDirectory(matchStr)
+			dirMatchCache[matchStr] = ok
 		}
 		if !ok {
 			continue

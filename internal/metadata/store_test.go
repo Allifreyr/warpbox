@@ -808,12 +808,15 @@ func TestMigrateAutoRecreatesV1DB(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Verify the DB was recreated with v2 schema.
+	// Verify the DB was recreated with v3 schema.
 	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files'`).Scan(&createSQL); err != nil {
-		t.Fatalf("reading v2 schema: %v", err)
+		t.Fatalf("reading v3 schema: %v", err)
 	}
 	if !strings.Contains(createSQL, "UNIQUE(source, item_id, file_id)") {
 		t.Fatal("recreated db should have v2 unique constraint")
+	}
+	if !strings.Contains(createSQL, "filter_tags") {
+		t.Fatal("recreated db should have filter_tags column")
 	}
 
 	// Verify PRAGMA user_version was set.
@@ -821,8 +824,8 @@ func TestMigrateAutoRecreatesV1DB(t *testing.T) {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("reading user_version: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("user_version = %d, want 2", version)
+	if version != 3 {
+		t.Errorf("user_version = %d, want 3", version)
 	}
 
 	// Verify upserts work with the new schema.
@@ -834,3 +837,68 @@ func TestMigrateAutoRecreatesV1DB(t *testing.T) {
 		t.Fatal("migrated db should allow upserts and lookups")
 	}
 }
+
+func TestMigrateAutoRecreatesV2DB(t *testing.T) {
+	// Create a v2-schema database file and verify Open() auto-recreates it to v3.
+	path := t.TempDir() + "/test_v2.db"
+
+	v2Schema := `
+	CREATE TABLE IF NOT EXISTS files (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		item_id         INTEGER NOT NULL DEFAULT 0,
+		file_id         INTEGER NOT NULL DEFAULT 0,
+		source          INTEGER NOT NULL DEFAULT 0,
+		name            TEXT    NOT NULL,
+		path            TEXT    NOT NULL,
+		size            INTEGER NOT NULL DEFAULT 0,
+		mime_type       TEXT    NOT NULL DEFAULT '',
+		cdn_url         TEXT    NOT NULL DEFAULT '',
+		cdn_url_expires TEXT    NOT NULL DEFAULT '',
+		created_at      TEXT    NOT NULL DEFAULT '',
+		sync_tag        INTEGER NOT NULL DEFAULT 0,
+		updated         TEXT    NOT NULL DEFAULT (datetime('now')),
+		UNIQUE(source, item_id, file_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
+	CREATE INDEX IF NOT EXISTS idx_files_source_file_id ON files(source, file_id);
+	CREATE INDEX IF NOT EXISTS idx_files_sync_tag ON files(sync_tag);
+	CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+	`
+	rawDB, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("opening raw v2 db: %v", err)
+	}
+	if _, err := rawDB.Exec(v2Schema); err != nil {
+		t.Fatalf("creating v2 schema: %v", err)
+	}
+	// Stamp user_version to 2.
+	if _, err := rawDB.Exec("PRAGMA user_version = 2"); err != nil {
+		t.Fatalf("setting user_version to 2: %v", err)
+	}
+	rawDB.Close()
+
+	// Open with current code.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on v2 db failed (should auto-recreate): %v", err)
+	}
+	defer s.Close()
+
+	// Verify DB is recreated with v3 schema.
+	var createSQL string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files'`).Scan(&createSQL); err != nil {
+		t.Fatalf("reading v3 schema: %v", err)
+	}
+	if !strings.Contains(createSQL, "filter_tags") {
+		t.Fatal("recreated db should have filter_tags column")
+	}
+
+	var version int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("reading user_version: %v", err)
+	}
+	if version != 3 {
+		t.Errorf("user_version = %d, want 3", version)
+	}
+}
+

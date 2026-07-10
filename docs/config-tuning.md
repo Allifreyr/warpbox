@@ -172,3 +172,34 @@ The `__all__` virtual path is always available and shows everything unfiltered.
 A pair of virtual paths for movies and TV is enabled by default. You can add
 more — for example, a `documentaries` path with different regexes — or
 customise the existing ones to match your naming convention.
+
+## Tag-Based Overrides
+
+For torrents that lack traditional naming indicators (e.g. older TV shows or complete cartoon packs that get misclassified into `/movies` because they lack standard tags like `S01`, `Season`, or `Complete`), you can use TorBox dashboard tags to force them into a specific virtual library path.
+
+### How it works
+1. When you sync from TorBox, Warpbox maps tags from your TorBox dashboard.
+2. Any tag that matches the `library.override_tags` configuration (defaults to `["forcedtv"]`) is stored as metadata alongside the files.
+3. When Warpbox evaluates the `directory_include` and `directory_exclude` regexes, it appends the matching tags to the directory name (e.g. `Cow and Chicken forcedtv`).
+4. **Important**: The actual virtual path of the files is **never mutated** (preserving path stability, rclone cache, and Plex watch history). The tag is only used temporarily during filter matching.
+
+### Setup
+To use this, add the override tag (e.g. `forcedtv`) to your directory include and exclude regexes in your `config.yml`:
+
+```yaml
+library:
+  override_tags:
+    - forcedtv
+
+  virtual_paths:
+    - name: movies
+      directory_exclude: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b|forcedtv"
+      file_regex: ".*\\.(mkv|mp4|avi)$"
+      largest_file_only: true
+    - name: tv
+      directory_include: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b|forcedtv"
+      file_regex: ".*\\.(mkv|mp4|avi)$"
+      largest_file_only: true
+```
+
+Once configured, simply tag the torrent on your TorBox dashboard with `forcedtv` and it will automatically move to the TV section on the next sync.

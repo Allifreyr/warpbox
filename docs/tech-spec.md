@@ -61,7 +61,7 @@ If you change the code, update this spec.
 
 12. **Signal context.** `ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM); defer stop()` — the root context is cancelled when SIGINT or SIGTERM is received. All components derive their contexts from this root.
 
-13. **Sync worker.** `metadata.NewSyncWorker(store, client, queue, interval, listPageSize, retryAttempts, retryBackoff)`:
+13. **Sync worker.** `metadata.NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, overrideTags)`:
     - Stores references to the metadata store, TorBox client, throttle queue, interval, and limit
     - Wires library hooks: `syncWorker.OnItemsAdded` and `syncWorker.OnItemsRemoved` are set to call `runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items)` when configured
     - `go syncWorker.Start(ctx)` — runs the periodic sync loop in a background goroutine
@@ -445,7 +445,7 @@ The core request executor:
 
 `SyncWorker` manages the periodic TorBox → SQLite synchronisation loop:
 
-- **`NewSyncWorker(store, client, queue, interval, listPageSize, retryAttempts, retryBackoff)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. Does not start.
+- **`NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, overrideTags)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. `overrideTags` (default ["forcedtv"]) specifies which TorBox dashboard tags participate in filter matching. Does not start.
 - **`Start(ctx)`** — stores `ctx` as `parentCtx`, creates a derived `cancelCtx`, calls `runLoop(ctx)`, closes `loopDone` channel on exit.
 - **`Stop()`** — calls the cancel function on the current loop, waits up to 90 seconds for `loopDone` to close. Safe to call multiple times or before `Start`.
 - **`Restart()`** — calls `Stop()`, creates a new derived context from `parentCtx`, launches `runLoop` in a new goroutine.
@@ -532,7 +532,7 @@ sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000&_cache_size=-819
 - **Busy timeout:** 5000ms (5 seconds) — SQLite will retry locked statements for up to 5 seconds before returning an error.
 - **Cache size:** -8192 pages → 8 MB page cache (negative means kilobytes).
 
-### Schema (v0 — applied via `CREATE IF NOT EXISTS`)
+### Schema (v3 — applied via `CREATE IF NOT EXISTS` with rebuild migration)
 
 ```sql
 CREATE TABLE IF NOT EXISTS files (
@@ -541,14 +541,16 @@ CREATE TABLE IF NOT EXISTS files (
     file_id         INTEGER NOT NULL DEFAULT 0,
     source          INTEGER NOT NULL DEFAULT 0,  -- 0=torrent, 1=usenet
     name            TEXT    NOT NULL,
-    path            TEXT    NOT NULL UNIQUE,       -- virtual path, derived from s3_path
+    path            TEXT    NOT NULL,            -- virtual path, derived from s3_path
     size            INTEGER NOT NULL DEFAULT 0,
     mime_type       TEXT    NOT NULL DEFAULT '',
     cdn_url         TEXT    NOT NULL DEFAULT '',
     cdn_url_expires TEXT    NOT NULL DEFAULT '',  -- RFC 3339 UTC timestamp
     created_at      TEXT    NOT NULL DEFAULT '',
     sync_tag        INTEGER NOT NULL DEFAULT 0,   -- sync batch ID; 0 = legacy
-    updated         TEXT    NOT NULL DEFAULT (datetime('now'))
+    updated         TEXT    NOT NULL DEFAULT (datetime('now')),
+    filter_tags     TEXT    NOT NULL DEFAULT '',  -- space-separated override tags (e.g. forcedtv)
+    UNIQUE(source, item_id, file_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
@@ -571,14 +573,14 @@ CREATE INDEX IF NOT EXISTS idx_stats_metric_time ON stats(metric, timestamp);
 
 ### Migration Strategy
 
-`CREATE TABLE IF NOT EXISTS` — migrations are additive only. There are no versioned migrations, downgrade paths, or schema version tracking. Schema changes must be backward-compatible (add tables, add optional columns). The `meta` table stores key-value pairs for operational state (currently only `sync_tag` counter).
+SQLite schemas are versioned and migrations are handled dynamically. Schema changes check for existing columns (e.g. `filter_tags` for v3) and recreate the database if a mismatch/upgrade is needed. Since the database acts as a cache, recreating it safely self-heals during the next sync.
 
 ### Store API
 
 | Method | Primary SQL | Notes |
 |--------|-------------|-------|
-| `UpsertFile(f)` | `INSERT ... ON CONFLICT(path) DO UPDATE SET item_id=excluded.item_id, ... all fields, sync_tag=excluded.sync_tag, updated=datetime('now')` | ON CONFLICT uses the `path` UNIQUE constraint. Updates all fields including CDN URL cache. |
-| `ListDir(prefix)` | `SELECT id, item_id, file_id, source, name, path, size, mime_type, created_at FROM files WHERE path LIKE prefix||'%' ORDER BY name` | Returns all files under a virtual directory prefix. |
+| `UpsertFile(f)` | `INSERT ... ON CONFLICT(source, item_id, file_id) DO UPDATE SET name=excluded.name, path=excluded.path, size=excluded.size, mime_type=excluded.mime_type, created_at=excluded.created_at, sync_tag=excluded.sync_tag, filter_tags=excluded.filter_tags, updated=excluded.updated` | ON CONFLICT uses the `(source, item_id, file_id)` unique constraint. Updates all metadata fields including tags. |
+| `ListDir(prefix)` | `SELECT id, item_id, file_id, source, name, path, size, mime_type, created_at, filter_tags FROM files WHERE path LIKE prefix||'%' ORDER BY name` | Returns all files under a virtual directory prefix with their tags. |
 | `GetFileByPath(path)` | `SELECT ... FROM files WHERE path = ?` | Returns `*FileRecord` or `nil` on `sql.ErrNoRows`. |
 | `GetFileByFileID(source, fileID)` | `SELECT ... FROM files WHERE source = ? AND file_id = ? LIMIT 1` | For CDN URL lookups when path-based lookup is not available. |
 | `SetCDNURL(internalID, url, expiresAt)` | `UPDATE files SET cdn_url=?, cdn_url_expires=?, updated=datetime('now') WHERE id=?` | Retries up to 3 times with exponential backoff (100ms, 200ms, 400ms) if the database is locked. Increments `dbLockErrors` counter on lock failures. |

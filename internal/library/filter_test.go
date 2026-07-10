@@ -306,3 +306,86 @@ func TestApplyFilter_LargestFileOnly(t *testing.T) {
 		t.Errorf("expected largest (5000), got %d", got[0].Size)
 	}
 }
+
+func TestApplyFilter_WithFilterTags_IncludeOverride(t *testing.T) {
+	// TV filter with "forcedtv" added to the include regex.
+	f, err := NewFilter("/tv", "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|forcedtv", "", `.*\.(mkv|mp4|avi)$`, false)
+	if err != nil {
+		t.Fatalf("NewFilter failed: %v", err)
+	}
+
+	records := []metadata.FileRecord{
+		// "Cow and Chicken" has no TV indicators — but has forcedtv tag.
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Cow and Chicken/episode.avi", Size: 500, FilterTags: "forcedtv"},
+		// Normal TV show — matches via S01.
+		{ItemID: 2, Source: metadata.SourceTorrent, Path: "Breaking.Bad.S01/ep1.mkv", Size: 1000},
+		// Movie — no tag, no TV indicators.
+		{ItemID: 3, Source: metadata.SourceTorrent, Path: "The.Matrix.1999/movie.mkv", Size: 5000},
+	}
+
+	got := f.Apply(records)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 records (Cow+Chicken and Breaking Bad), got %d", len(got))
+	}
+
+	foundCow := false
+	foundBad := false
+	for _, r := range got {
+		if r.ItemID == 1 {
+			foundCow = true
+		}
+		if r.ItemID == 2 {
+			foundBad = true
+		}
+	}
+	if !foundCow {
+		t.Error("expected Cow and Chicken (forcedtv tag) to be included in TV")
+	}
+	if !foundBad {
+		t.Error("expected Breaking Bad (S01 indicator) to be included in TV")
+	}
+}
+
+func TestApplyFilter_WithFilterTags_ExcludeOverride(t *testing.T) {
+	// Movies filter with "forcedtv" added to the exclude regex.
+	f, err := NewFilter("/movies", "", "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|forcedtv", `.*\.(mkv|mp4|avi)$`, false)
+	if err != nil {
+		t.Fatalf("NewFilter failed: %v", err)
+	}
+
+	records := []metadata.FileRecord{
+		// "Cow and Chicken" with forcedtv tag — should be EXCLUDED from movies.
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Cow and Chicken/episode.avi", Size: 500, FilterTags: "forcedtv"},
+		// Movie — no tag, no TV indicators — should remain in movies.
+		{ItemID: 2, Source: metadata.SourceTorrent, Path: "The.Matrix.1999/movie.mkv", Size: 5000},
+	}
+
+	got := f.Apply(records)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 record (only Matrix), got %d", len(got))
+	}
+	if got[0].ItemID != 2 {
+		t.Errorf("expected Matrix (item 2), got item %d", got[0].ItemID)
+	}
+}
+
+func TestApplyFilter_EmptyFilterTags_NoChange(t *testing.T) {
+	// Verify that empty FilterTags produces identical behavior to current code.
+	f, err := NewFilter("/movies", "", "(?i)S01|season", `.*\.(mkv|mp4)$`, false)
+	if err != nil {
+		t.Fatalf("NewFilter failed: %v", err)
+	}
+
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "TV.Show.S01/ep1.mkv", Size: 1000, FilterTags: ""},
+		{ItemID: 2, Source: metadata.SourceTorrent, Path: "The.Matrix.1999/movie.mkv", Size: 5000, FilterTags: ""},
+	}
+
+	got := f.Apply(records)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 record (only movie), got %d", len(got))
+	}
+	if got[0].ItemID != 2 {
+		t.Errorf("expected movie (item 2), got item %d", got[0].ItemID)
+	}
+}

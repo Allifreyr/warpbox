@@ -106,6 +106,7 @@ type Torrent struct {
 	ID               int64         `json:"id"`
 	AuthID           string        `json:"auth_id"`
 	Name             string        `json:"name"`
+	Tags             []string      `json:"tags"`
 	Hash             string        `json:"hash"`
 	Size             int64         `json:"size"`
 	DownloadState    string        `json:"download_state"`

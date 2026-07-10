@@ -128,6 +128,7 @@ func main() {
 		cfg.Sync.BypassCache,
 		*cfg.Sync.RetryAttempts,
 		time.Duration(*cfg.Sync.RetryBackoff)*time.Second,
+		cfg.Library.OverrideTags,
 	)
 
 	// Set library change hooks.

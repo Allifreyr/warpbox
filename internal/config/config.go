@@ -93,6 +93,7 @@ type LibraryConfig struct {
 	OnItemsAdded     string              `yaml:"on_items_added"`   // Shell command for new items
 	OnItemsRemoved   string              `yaml:"on_items_removed"` // Shell command for removed items
 	HookTimeoutSec   int                 `yaml:"hook_timeout_seconds"` // Hook execution timeout; default 30
+	OverrideTags     []string            `yaml:"override_tags"`         // Tags that affect filter matching; default ["forcedtv"]
 }
 
 // AuthConfig holds optional HTTP Basic Authentication settings for the web UI.
@@ -208,6 +209,9 @@ func setDefaults(c *Config) {
 	}
 	if c.Library.HookTimeoutSec == 0 {
 		c.Library.HookTimeoutSec = 30
+	}
+	if len(c.Library.OverrideTags) == 0 {
+		c.Library.OverrideTags = []string{"forcedtv"}
 	}
 }
 

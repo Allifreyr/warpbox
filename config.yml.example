@@ -146,6 +146,21 @@ library:
   # killed and a warning is logged. Must be 1–3600. Default: 30.
   # hook_timeout_seconds: 30
 
+  # Tags from the TorBox dashboard that affect virtual path classification.
+  # When a torrent is tagged with any of these on the TorBox dashboard,
+  # the tag is included in the directory name when matching against
+  # directory_include/directory_exclude regex patterns. This allows you to
+  # override classification for specific torrents without modifying the
+  # regex itself.
+  #
+  # Example: Tag a torrent with "forcedtv" on TorBox, then add |forcedtv
+  # to your directory_include for TV and directory_exclude for movies.
+  # The torrent's virtual path is NOT changed — only filter matching is affected.
+  #
+  # Default: ["forcedtv"]
+  # override_tags:
+  #   - forcedtv
+
 auth:
   # Enable HTTP Basic Authentication for the web management UI.
   # When enabled, the landing page, logs, actions, stats, and HTTP browser

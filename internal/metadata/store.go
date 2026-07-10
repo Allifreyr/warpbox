@@ -61,6 +61,7 @@ type FileRecord struct {
 	CDNURL       string     `json:"cdn_url,omitempty"`
 	CDNURLExpiry string     `json:"cdn_url_expires,omitempty"`
 	SyncTag      int64      `json:"sync_tag,omitempty"`   // Sync batch tag for prune; 0 = unsynced
+	FilterTags   string     `json:"filter_tags,omitempty"` // Space-joined override tags from TorBox dashboard
 }
 
 // isLockedError returns true if the error is a transient SQLite lock error.
@@ -96,7 +97,7 @@ func (s *Store) Close() error {
 }
 
 // currentSchemaVersion is the latest schema version tracked via PRAGMA user_version.
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // migrate creates tables if they do not exist and runs any pending schema
 // upgrades. Upgrades are one-way: downgrading requires deleting the database
@@ -117,6 +118,7 @@ func (s *Store) migrate() error {
 		created_at      TEXT    NOT NULL DEFAULT '',
 		sync_tag        INTEGER NOT NULL DEFAULT 0,
 		updated         TEXT    NOT NULL DEFAULT (datetime('now')),
+		filter_tags     TEXT    NOT NULL DEFAULT '',
 		UNIQUE(source, item_id, file_id)
 	);
 	CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
@@ -176,6 +178,36 @@ func (s *Store) migrate() error {
 		slog.Info("database recreated for schema v2")
 	}
 
+	// v3 adds the filter_tags column for tag-based filter overrides.
+	// Re-read the CREATE TABLE text after a possible v2 recreate.
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'files'`).Scan(&createSQL); err != nil {
+		return fmt.Errorf("reading files table schema for v3 check: %w", err)
+	}
+	if !strings.Contains(createSQL, "filter_tags") {
+		slog.Info("database schema upgrade needed, recreating for v3",
+			"reason", "filter_tags column not found in CREATE TABLE",
+		)
+		s.db.Close()
+
+		for _, ext := range []string{"", "-wal", "-shm"} {
+			if err := os.Remove(s.dbPath + ext); err != nil && !os.IsNotExist(err) {
+				slog.Warn("removing database file during v3 migration", "path", s.dbPath+ext, "error", err)
+			}
+		}
+
+		db, err := sql.Open("sqlite3", s.dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_cache_size=-8192")
+		if err != nil {
+			return fmt.Errorf("reopening database after v3 schema upgrade: %w", err)
+		}
+		s.db = db
+
+		if _, err := s.db.Exec(schema); err != nil {
+			return fmt.Errorf("creating schema in v3 upgraded database: %w", err)
+		}
+
+		slog.Info("database recreated for schema v3")
+	}
+
 	// Stamp the current version (SET is idempotent).
 	if _, err := s.db.Exec("PRAGMA user_version = " + strconv.Itoa(currentSchemaVersion)); err != nil {
 		return fmt.Errorf("setting schema version: %w", err)
@@ -192,8 +224,8 @@ func (s *Store) migrate() error {
 // so that PruneBySyncTag can delete records not touched by the latest sync.
 func (s *Store) UpsertFile(f FileRecord) error {
 	_, err := s.db.Exec(`
-		INSERT INTO files (item_id, file_id, source, name, path, size, mime_type, created_at, cdn_url, cdn_url_expires, sync_tag, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		INSERT INTO files (item_id, file_id, source, name, path, size, mime_type, created_at, cdn_url, cdn_url_expires, sync_tag, filter_tags, updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(source, item_id, file_id) DO UPDATE SET
 			name            = excluded.name,
 			path            = excluded.path,
@@ -201,8 +233,9 @@ func (s *Store) UpsertFile(f FileRecord) error {
 			mime_type       = excluded.mime_type,
 			created_at      = excluded.created_at,
 			sync_tag        = excluded.sync_tag,
+			filter_tags     = excluded.filter_tags,
 			updated         = excluded.updated
-	`, f.ItemID, f.FileID, f.Source, f.Name, f.Path, f.Size, f.MimeType, f.CreatedAt, f.CDNURL, f.CDNURLExpiry, f.SyncTag)
+	`, f.ItemID, f.FileID, f.Source, f.Name, f.Path, f.Size, f.MimeType, f.CreatedAt, f.CDNURL, f.CDNURLExpiry, f.SyncTag, f.FilterTags)
 	if isLockedError(err) {
 		s.dbLockErrors.Add(1)
 	}
@@ -214,7 +247,7 @@ func (s *Store) UpsertFile(f FileRecord) error {
 // collapsed to a single entry using the highest internal id.
 func (s *Store) ListDir(prefix string) ([]FileRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT id, item_id, file_id, source, name, path, size, mime_type, created_at FROM files
+		SELECT id, item_id, file_id, source, name, path, size, mime_type, created_at, filter_tags FROM files
 		WHERE path LIKE ? AND id IN (
 			SELECT MAX(id) FROM files WHERE path LIKE ? GROUP BY path
 		)
@@ -228,7 +261,7 @@ func (s *Store) ListDir(prefix string) ([]FileRecord, error) {
 	var files []FileRecord
 	for rows.Next() {
 		var f FileRecord
-		if err := rows.Scan(&f.ID, &f.ItemID, &f.FileID, &f.Source, &f.Name, &f.Path, &f.Size, &f.MimeType, &f.CreatedAt); err != nil {
+		if err := rows.Scan(&f.ID, &f.ItemID, &f.FileID, &f.Source, &f.Name, &f.Path, &f.Size, &f.MimeType, &f.CreatedAt, &f.FilterTags); err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
 		}
 		files = append(files, f)

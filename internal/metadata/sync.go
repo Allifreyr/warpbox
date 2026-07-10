@@ -28,6 +28,7 @@ type SyncWorker struct {
 	bypassCache    bool
 	retryAttempts  int
 	retryBackoff   time.Duration
+	overrideTags  map[string]bool // Tags that participate in filter matching
 	lastError      error
 	lastSuccess    time.Time
 
@@ -62,7 +63,11 @@ func (w *SyncWorker) Status() SyncStatus {
 // listPageSize is the per-request page window when paginating mylist API calls.
 // retryAttempts is the max number of retries for transient API errors.
 // retryBackoff is the base backoff duration (exponential: 1x, 2x, 4x).
-func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, interval time.Duration, listPageSize int, bypassCache bool, retryAttempts int, retryBackoff time.Duration) *SyncWorker {
+func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, interval time.Duration, listPageSize int, bypassCache bool, retryAttempts int, retryBackoff time.Duration, overrideTags []string) *SyncWorker {
+	tagSet := make(map[string]bool, len(overrideTags))
+	for _, t := range overrideTags {
+		tagSet[strings.ToLower(strings.TrimSpace(t))] = true
+	}
 	return &SyncWorker{
 		store:          store,
 		client:         client,
@@ -72,6 +77,7 @@ func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, i
 		bypassCache:    bypassCache,
 		retryAttempts:  retryAttempts,
 		retryBackoff:   retryBackoff,
+		overrideTags:  tagSet,
 	}
 }
 
@@ -363,7 +369,7 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 		}
 
 		for _, f := range t.Files {
-			rec := buildFileRecord(t.ID, f, syncTag, SourceTorrent, t.CreatedAt)
+			rec := buildFileRecord(t.ID, f, syncTag, SourceTorrent, t.CreatedAt, t.Tags, w.overrideTags)
 			if err := w.store.UpsertFile(rec); err != nil {
 				slog.Error("metadata sync: upsert failed",
 					"file_id", f.ID,
@@ -387,7 +393,7 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 		}
 
 		for _, f := range u.Files {
-			rec := buildFileRecord(u.ID, f, syncTag, SourceUsenet, u.CreatedAt)
+			rec := buildFileRecord(u.ID, f, syncTag, SourceUsenet, u.CreatedAt, u.Tags, w.overrideTags)
 			if err := w.store.UpsertFile(rec); err != nil {
 				slog.Error("metadata sync: upsert failed",
 					"file_id", f.ID,
@@ -451,7 +457,7 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 }
 
 // buildFileRecord creates a FileRecord from a TorBox item and file.
-func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source FileSource, createdAt string) FileRecord {
+func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source FileSource, createdAt string, tags []string, overrideTags map[string]bool) FileRecord {
 	// Derive the virtual path from s3_path: strip the leading hash segment.
 	// s3_path is always "hash/torrent_dir/file_name" for multi-file torrents
 	// but can be "hash/file_name" for single-file torrents with no directory.
@@ -477,15 +483,32 @@ func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source F
 		virtualPath = sanitizePathSegment(f.ShortName)
 	}
 
+	// Filter TorBox dashboard tags against the configured override list.
+	// Only matching tags are stored — this prevents random user tags from
+	// accidentally matching directory regex patterns.
+	var filterTags string
+	if len(tags) > 0 && len(overrideTags) > 0 {
+		var matched []string
+		for _, tag := range tags {
+			if overrideTags[strings.ToLower(strings.TrimSpace(tag))] {
+				matched = append(matched, sanitizePathSegment(tag))
+			}
+		}
+		if len(matched) > 0 {
+			filterTags = strings.Join(matched, " ")
+		}
+	}
+
 	return FileRecord{
-		ItemID:    itemID,
-		FileID:    f.ID,
-		Source:    source,
-		Name:      sanitizePathSegment(f.ShortName),
-		Path:      virtualPath,
-		Size:      f.Size,
-		MimeType:  f.MimeType,
-		CreatedAt: createdAt,
-		SyncTag:   syncTag,
+		ItemID:     itemID,
+		FileID:     f.ID,
+		Source:     source,
+		Name:       sanitizePathSegment(f.ShortName),
+		Path:       virtualPath,
+		Size:       f.Size,
+		MimeType:   f.MimeType,
+		CreatedAt:  createdAt,
+		SyncTag:    syncTag,
+		FilterTags: filterTags,
 	}
 }
