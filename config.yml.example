@@ -146,20 +146,31 @@ library:
   # killed and a warning is logged. Must be 1–3600. Default: 30.
   # hook_timeout_seconds: 30
 
-  # Tags from the TorBox dashboard that affect virtual path classification.
+  # Tags from the TorBox dashboard that affect virtual path behavior.
   # When a torrent is tagged with any of these on the TorBox dashboard,
   # the tag is included in the directory name when matching against
   # directory_include/directory_exclude regex patterns. This allows you to
   # override classification for specific torrents without modifying the
   # regex itself.
   #
-  # Example: Tag a torrent with "forcedtv" on TorBox, then add |forcedtv
-  # to your directory_include for TV and directory_exclude for movies.
-  # The torrent's virtual path is NOT changed — only filter matching is affected.
+  # Built-in tags:
+  #   - forcedtv: Appends "forcedtv" to the directory name during filter
+  #     matching only. Add |forcedtv to your directory_include for TV and
+  #     directory_exclude for movies to force-classify a torrent as TV.
+  #     The virtual path is NOT changed — only filter matching is affected.
   #
-  # Default: ["forcedtv"]
+  #   - rename: Uses the TorBox dashboard-editable torrent Name as the
+  #     virtual directory name instead of the S3-derived path. Useful when
+  #     the S3 path is wrong or you want to control how Plex sees the
+  #     folder name. Single-file torrents are wrapped in a directory.
+  #     Only the top-level directory is replaced; subdirectories are preserved.
+  #     NOTE: Renaming on the dashboard with this tag active WILL change
+  #     the virtual path, which may trigger a Plex rescan.
+  #
+  # Default: ["forcedtv", "rename"]
   # override_tags:
   #   - forcedtv
+  #   - rename
 
 auth:
   # Enable HTTP Basic Authentication for the web management UI.

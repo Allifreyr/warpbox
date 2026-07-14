@@ -175,21 +175,25 @@ customise the existing ones to match your naming convention.
 
 ## Tag-Based Overrides
 
-For torrents that lack traditional naming indicators (e.g. older TV shows or complete cartoon packs that get misclassified into `/movies` because they lack standard tags like `S01`, `Season`, or `Complete`), you can use TorBox dashboard tags to force them into a specific virtual library path.
+Warpbox recognizes special tags from your TorBox dashboard to override virtual path behavior. Tags are configured via `library.override_tags` (default: `["forcedtv", "rename"]`).
 
-### How it works
-1. When you sync from TorBox, Warpbox maps tags from your TorBox dashboard.
-2. Any tag that matches the `library.override_tags` configuration (defaults to `["forcedtv"]`) is stored as metadata alongside the files.
+### `forcedtv` — Force Classification
+
+For torrents that lack traditional naming indicators (e.g. older TV shows or complete cartoon packs that get misclassified into `/movies` because they lack standard tags like `S01`, `Season`, or `Complete`), you can use the `forcedtv` tag to force them into the correct virtual library path.
+
+**How it works:**
+1. When you sync from TorBox, Warpbox checks each torrent's tags against `library.override_tags`.
+2. Any matching tag is stored as metadata alongside the files.
 3. When Warpbox evaluates the `directory_include` and `directory_exclude` regexes, it appends the matching tags to the directory name (e.g. `Cow and Chicken forcedtv`).
 4. **Important**: The actual virtual path of the files is **never mutated** (preserving path stability, rclone cache, and Plex watch history). The tag is only used temporarily during filter matching.
 
-### Setup
-To use this, add the override tag (e.g. `forcedtv`) to your directory include and exclude regexes in your `config.yml`:
+**Setup:** Add `forcedtv` (or `|forcedtv`) to your directory include and exclude regexes:
 
 ```yaml
 library:
   override_tags:
     - forcedtv
+    - rename
 
   virtual_paths:
     - name: movies
@@ -202,4 +206,32 @@ library:
       largest_file_only: true
 ```
 
-Once configured, simply tag the torrent on your TorBox dashboard with `forcedtv` and it will automatically move to the TV section on the next sync.
+Once configured, tag the torrent on your TorBox dashboard with `forcedtv` and it will move to the TV section on the next sync.
+
+### `rename` — Override Virtual Directory Name
+
+For torrents whose S3-derived directory name is incorrect or undesirable, the `rename` tag tells Warpbox to use the **editable torrent Name from the TorBox dashboard** as the virtual directory name.
+
+**How it works:**
+1. Add the `rename` tag to a torrent on your TorBox dashboard.
+2. Edit the torrent's name on the dashboard to the desired directory name (e.g. `Cow and Chicken S01-04`).
+3. On the next sync, Warpbox replaces the top-level directory with the dashboard name.
+4. Subdirectories (e.g. `Season 1/`) are preserved — only the top-level directory is replaced.
+5. Single-file torrents are wrapped in a directory named after the dashboard name.
+
+**Example:**
+- S3 path: `hash/Cow and Chicken/episode.avi`
+- Without `rename` tag: virtual path = `Cow and Chicken/episode.avi`
+- With `rename` tag and dashboard name `Cow and Chicken S01-04`: virtual path = `Cow and Chicken S01-04/episode.avi`
+
+> **Note:** Changing the dashboard name while the `rename` tag is active will change the virtual path on the next sync. This may trigger a Plex rescan for the affected content. This is by design — you are intentionally renaming the content.
+
+> **Tip:** Removing the `rename` tag reverts the virtual path to the original S3-derived name on the next sync.
+
+### Combining Tags
+
+Tags can be combined. For example, tagging a torrent with both `rename` and `forcedtv`:
+- The virtual directory is renamed from the dashboard name (`rename`)
+- The tag `forcedtv` is appended during filter matching to override classification
+
+This is useful for shows like "Cow and Chicken" that have both a wrong S3 name and no TV indicators — you fix the name and force it into the TV library simultaneously.

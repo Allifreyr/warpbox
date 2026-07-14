@@ -445,7 +445,7 @@ The core request executor:
 
 `SyncWorker` manages the periodic TorBox → SQLite synchronisation loop:
 
-- **`NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, overrideTags)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. `overrideTags` (default ["forcedtv"]) specifies which TorBox dashboard tags participate in filter matching. Does not start.
+- **`NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, overrideTags)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. `overrideTags` (default ["forcedtv", "rename"]) specifies which TorBox dashboard tags participate in filter matching and path overrides. Does not start.
 - **`Start(ctx)`** — stores `ctx` as `parentCtx`, creates a derived `cancelCtx`, calls `runLoop(ctx)`, closes `loopDone` channel on exit.
 - **`Stop()`** — calls the cancel function on the current loop, waits up to 90 seconds for `loopDone` to close. Safe to call multiple times or before `Start`.
 - **`Restart()`** — calls `Stop()`, creates a new derived context from `parentCtx`, launches `runLoop` in a new goroutine.
@@ -477,7 +477,7 @@ The core request executor:
 **4. Torrent flattening.** Iterate torrents returned by the API:
    - Skip if `DownloadState != "cached"` AND `!DownloadPresent` (only shows cached/available items).
    - Skip torrents with zero files (log at DEBUG).
-   - For each file in the torrent: `buildFileRecord(torrentID, file, syncTag, SourceTorrent, createdAt)` → `store.UpsertFile(rec)`.
+   - For each file in the torrent: `buildFileRecord(torrentID, file, syncTag, SourceTorrent, createdAt, tags, overrideTags, itemName)` → `store.UpsertFile(rec)`.
 
 **5. Usenet flattening.** Same iterative pattern with `SourceUsenet`.
 
@@ -502,6 +502,11 @@ The `s3_path` from TorBox has the format `"<hash>/<path>"`. Path derivation rule
 - **Multi-file torrent** (s3_path has two or more slashes after the hash, e.g. `"abc123/Movies/Title.mkv"`): virtual path = `"Movies/Title.mkv"` — each segment is sanitized.
 - **Single-file torrent** (s3_path has exactly one more segment after the hash, e.g. `"abc123/Title.mkv"`): virtual path = `"Title.mkv"` — placed directly at root level without a wrapper directory.
 - **No slash in s3_path fallback:** virtual path = `sanitize(ShortName)`.
+
+**Rename tag override:** When the `rename` tag is present in the torrent's tags AND is configured in `overrideTags`, the path derivation changes:
+- **Multi-file torrent:** The top-level directory segment is replaced with the sanitized torrent `Name` from the TorBox dashboard. Subdirectories and file names are preserved. E.g. `s3_path="hash/OldDir/Season 1/ep.mkv"` with `Name="NewDir"` → `"NewDir/Season 1/ep.mkv"`.
+- **Single-file torrent:** The file is wrapped in a directory named after the sanitized torrent `Name`. E.g. `s3_path="hash/movie.mkv"` with `Name="My Movie 2024"` → `"My Movie 2024/movie.mkv"`.
+- Without the `rename` tag, the `itemName` parameter is ignored and behavior is identical to the original path derivation.
 
 ### Path Sanitization (`sanitizePathSegment`)
 

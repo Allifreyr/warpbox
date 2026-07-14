@@ -20,7 +20,7 @@ func TestBuildFileRecordTorrent(t *testing.T) {
 		S3Path:    "abc123/dir/movie.mkv",
 		ShortName: "movie.mkv",
 	}
-	rec := buildFileRecord(42, f, 7, SourceTorrent, "2025-01-01T00:00:00Z", nil, nil)
+	rec := buildFileRecord(42, f, 7, SourceTorrent, "2025-01-01T00:00:00Z", nil, nil, "")
 
 	if rec.ItemID != 42 {
 		t.Errorf("ItemID = %d, want 42", rec.ItemID)
@@ -51,7 +51,7 @@ func TestBuildFileRecordUsenet(t *testing.T) {
 		S3Path:    "def456/usenet_file.mkv",
 		ShortName: "usenet_file.mkv",
 	}
-	rec := buildFileRecord(1644029, f, 3, SourceUsenet, "2025-06-01T12:00:00Z", nil, nil)
+	rec := buildFileRecord(1644029, f, 3, SourceUsenet, "2025-06-01T12:00:00Z", nil, nil, "")
 
 	if rec.ItemID != 1644029 {
 		t.Errorf("ItemID = %d, want 1644029", rec.ItemID)
@@ -74,7 +74,7 @@ func TestBuildFileRecordSingleFileAtRoot(t *testing.T) {
 		S3Path:    "abc123/movie.mkv",
 		ShortName: "movie.mkv",
 	}
-	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, nil)
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, nil, "")
 
 	if rec.Path != "movie.mkv" {
 		t.Errorf("single-file Path = %q, want %q", rec.Path, "movie.mkv")
@@ -88,7 +88,7 @@ func TestBuildFileRecordMultiFileWithDir(t *testing.T) {
 		S3Path:    "abc123/Season 1/episode.mkv",
 		ShortName: "episode.mkv",
 	}
-	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, nil)
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, nil, "")
 
 	if rec.Path != "Season 1/episode.mkv" {
 		t.Errorf("multi-file Path = %q, want %q", rec.Path, "Season 1/episode.mkv")
@@ -102,7 +102,7 @@ func TestBuildFileRecordSanitizesPath(t *testing.T) {
 		S3Path:    "abc123/A & B/show.mkv",
 		ShortName: "show.mkv",
 	}
-	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, nil)
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, nil, "")
 
 	if rec.Path != "A _ B/show.mkv" {
 		t.Errorf("sanitized Path = %q, want %q", rec.Path, "A _ B/show.mkv")
@@ -342,7 +342,7 @@ func TestBuildFileRecordWithTags(t *testing.T) {
 		ShortName: "episode.avi",
 	}
 	overrideTags := map[string]bool{"forcedtv": true}
-	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"forcedtv"}, overrideTags)
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"forcedtv"}, overrideTags, "")
 
 	if rec.FilterTags != "forcedtv" {
 		t.Errorf("FilterTags = %q, want %q", rec.FilterTags, "forcedtv")
@@ -362,13 +362,13 @@ func TestBuildFileRecordEmptyTags(t *testing.T) {
 	overrideTags := map[string]bool{"forcedtv": true}
 
 	// nil tags
-	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, overrideTags)
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, overrideTags, "")
 	if rec.FilterTags != "" {
 		t.Errorf("nil tags: FilterTags = %q, want empty", rec.FilterTags)
 	}
 
 	// empty tags slice
-	rec = buildFileRecord(1, f, 1, SourceTorrent, "", []string{}, overrideTags)
+	rec = buildFileRecord(1, f, 1, SourceTorrent, "", []string{}, overrideTags, "")
 	if rec.FilterTags != "" {
 		t.Errorf("empty tags: FilterTags = %q, want empty", rec.FilterTags)
 	}
@@ -383,13 +383,13 @@ func TestBuildFileRecordTagNotInOverrideList(t *testing.T) {
 	overrideTags := map[string]bool{"forcedtv": true}
 
 	// Tag "comedy" is not in the override list — should be ignored.
-	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"comedy", "drama"}, overrideTags)
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"comedy", "drama"}, overrideTags, "")
 	if rec.FilterTags != "" {
 		t.Errorf("non-override tags: FilterTags = %q, want empty", rec.FilterTags)
 	}
 
 	// Mix of override and non-override tags — only override tag is stored.
-	rec = buildFileRecord(1, f, 1, SourceTorrent, "", []string{"comedy", "forcedtv", "drama"}, overrideTags)
+	rec = buildFileRecord(1, f, 1, SourceTorrent, "", []string{"comedy", "forcedtv", "drama"}, overrideTags, "")
 	if rec.FilterTags != "forcedtv" {
 		t.Errorf("mixed tags: FilterTags = %q, want %q", rec.FilterTags, "forcedtv")
 	}
@@ -404,8 +404,68 @@ func TestBuildFileRecordTagCaseInsensitive(t *testing.T) {
 	overrideTags := map[string]bool{"forcedtv": true}
 
 	// Tags with different casing should still match.
-	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"ForcedTV"}, overrideTags)
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"ForcedTV"}, overrideTags, "")
 	if rec.FilterTags == "" {
 		t.Error("case-insensitive tag should match override list")
+	}
+}
+
+func TestBuildFileRecordWithRenameTag(t *testing.T) {
+	// Multi-file torrent: rename replaces top-level directory only
+	f := torbox.TorrentFile{
+		ID:        10,
+		S3Path:    "abc123/Cow and Chicken/episode.avi",
+		ShortName: "episode.avi",
+	}
+	overrideTags := map[string]bool{"rename": true}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"rename"}, overrideTags, "Cow and Chicken S01-04")
+
+	if rec.Path != "Cow and Chicken S01-04/episode.avi" {
+		t.Errorf("Path = %q, want %q", rec.Path, "Cow and Chicken S01-04/episode.avi")
+	}
+}
+
+func TestBuildFileRecordRenamePreservesSubdirs(t *testing.T) {
+	// Nested structure: only top-level dir is replaced
+	f := torbox.TorrentFile{
+		ID:        10,
+		S3Path:    "abc123/OldName/Season 1/ep01.mkv",
+		ShortName: "ep01.mkv",
+	}
+	overrideTags := map[string]bool{"rename": true}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"rename"}, overrideTags, "Better Name")
+
+	if rec.Path != "Better Name/Season 1/ep01.mkv" {
+		t.Errorf("Path = %q, want %q", rec.Path, "Better Name/Season 1/ep01.mkv")
+	}
+}
+
+func TestBuildFileRecordNoRenameTagNoChange(t *testing.T) {
+	// Without rename tag: itemName is ignored, path comes from S3
+	f := torbox.TorrentFile{
+		ID:        10,
+		S3Path:    "abc123/Original Name/movie.mkv",
+		ShortName: "movie.mkv",
+	}
+	overrideTags := map[string]bool{"forcedtv": true}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"forcedtv"}, overrideTags, "Different Dashboard Name")
+
+	if rec.Path != "Original Name/movie.mkv" {
+		t.Errorf("Path = %q, want %q (rename tag absent, should use S3 path)", rec.Path, "Original Name/movie.mkv")
+	}
+}
+
+func TestBuildFileRecordRenameSingleFile(t *testing.T) {
+	// Single-file torrent: wraps in named directory
+	f := torbox.TorrentFile{
+		ID:        10,
+		S3Path:    "abc123/movie.mkv",
+		ShortName: "movie.mkv",
+	}
+	overrideTags := map[string]bool{"rename": true}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"rename"}, overrideTags, "My Movie 2024")
+
+	if rec.Path != "My Movie 2024/movie.mkv" {
+		t.Errorf("Path = %q, want %q", rec.Path, "My Movie 2024/movie.mkv")
 	}
 }

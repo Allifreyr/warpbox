@@ -369,7 +369,7 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 		}
 
 		for _, f := range t.Files {
-			rec := buildFileRecord(t.ID, f, syncTag, SourceTorrent, t.CreatedAt, t.Tags, w.overrideTags)
+			rec := buildFileRecord(t.ID, f, syncTag, SourceTorrent, t.CreatedAt, t.Tags, w.overrideTags, t.Name)
 			if err := w.store.UpsertFile(rec); err != nil {
 				slog.Error("metadata sync: upsert failed",
 					"file_id", f.ID,
@@ -393,7 +393,7 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 		}
 
 		for _, f := range u.Files {
-			rec := buildFileRecord(u.ID, f, syncTag, SourceUsenet, u.CreatedAt, u.Tags, w.overrideTags)
+			rec := buildFileRecord(u.ID, f, syncTag, SourceUsenet, u.CreatedAt, u.Tags, w.overrideTags, u.Name)
 			if err := w.store.UpsertFile(rec); err != nil {
 				slog.Error("metadata sync: upsert failed",
 					"file_id", f.ID,
@@ -457,7 +457,18 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 }
 
 // buildFileRecord creates a FileRecord from a TorBox item and file.
-func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source FileSource, createdAt string, tags []string, overrideTags map[string]bool) FileRecord {
+func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source FileSource, createdAt string, tags []string, overrideTags map[string]bool, itemName string) FileRecord {
+	// Check if the rename tag is present in tags and is configured in overrideTags.
+	var hasRenameTag bool
+	if overrideTags["rename"] {
+		for _, tag := range tags {
+			if strings.ToLower(strings.TrimSpace(tag)) == "rename" {
+				hasRenameTag = true
+				break
+			}
+		}
+	}
+
 	// Derive the virtual path from s3_path: strip the leading hash segment.
 	// s3_path is always "hash/torrent_dir/file_name" for multi-file torrents
 	// but can be "hash/file_name" for single-file torrents with no directory.
@@ -467,6 +478,9 @@ func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source F
 		rest := f.S3Path[idx+1:]
 		if idx2 := strings.IndexByte(rest, '/'); idx2 >= 0 {
 			// Multi-file torrent with a directory: "hash/dir/file"
+			if hasRenameTag && itemName != "" {
+				rest = itemName + rest[idx2:]
+			}
 			// Sanitize each path segment.
 			segments := strings.Split(rest, "/")
 			for i, seg := range segments {
@@ -475,12 +489,20 @@ func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source F
 			virtualPath = strings.Join(segments, "/")
 		} else {
 			// Single file s3_path: "hash/filename.ext"
-			// Place directly at root level (no wrapper directory).
-			virtualPath = sanitizePathSegment(rest)
+			if hasRenameTag && itemName != "" {
+				virtualPath = sanitizePathSegment(itemName) + "/" + sanitizePathSegment(rest)
+			} else {
+				// Place directly at root level (no wrapper directory).
+				virtualPath = sanitizePathSegment(rest)
+			}
 		}
 	} else {
 		// Fallback: no slash in s3_path at all — use sanitized ShortName.
-		virtualPath = sanitizePathSegment(f.ShortName)
+		if hasRenameTag && itemName != "" {
+			virtualPath = sanitizePathSegment(itemName) + "/" + sanitizePathSegment(f.ShortName)
+		} else {
+			virtualPath = sanitizePathSegment(f.ShortName)
+		}
 	}
 
 	// Filter TorBox dashboard tags against the configured override list.
