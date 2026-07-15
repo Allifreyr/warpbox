@@ -156,14 +156,19 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 	// Fetch the data through a proxied request to the CDN URL.
 	// If the CDN returns 403/404, the URL may be stale. Automatically re-fetch
 	// a fresh URL via the throttle queue and retry, up to cdn_url_repair_retries.
+	// Acquire the CDN semaphore *before* client.Do so max_cdn_connections
+	// actually limits concurrent TorBox CDN opens (D-016 / D-015c).
 	slog.Debug("GET: proxying from CDN", "id", file.ID, "offset", srvRange.Start)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	maxAttempts := s.cfg.CDNURLRepairRetries + 1
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		s.AcquireCDNConn()
+
 		proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, cdnURL, http.NoBody)
 		if err != nil {
+			s.ReleaseCDNConn()
 			slog.Error("GET: failed to create CDN request", "error", err)
 			http.Error(w, "Failed to create upstream request", http.StatusInternalServerError)
 			return
@@ -172,6 +177,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 
 		proxyResp, err := client.Do(proxyReq)
 		if err != nil {
+			s.ReleaseCDNConn()
 			slog.Error("GET: CDN proxy request failed", "error", err)
 			// Network error — do not retry.
 			http.Error(w, "CDN proxy error", http.StatusBadGateway)
@@ -183,6 +189,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 			s.cfg.CDNURLAutoRepair && attempt < maxAttempts-1 {
 
 			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
 			slog.Warn("stale CDN URL detected, refreshing",
 				"path", file.Path,
 				"attempt", attempt+1,
@@ -221,12 +228,13 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 
 		// 429 (rate limit) and 5xx (server error) from the CDN are transient.
 		// Instead of returning 502 (which rclone counts as an error toward
-		// maxErrorCount=10), route into hang/poll mode. The cached CDN URL is
-		// invalidated so the poll loop will re-fetch a fresh URL and give the
-		// CDN time to drain connections.
+		// maxErrorCount=10), route into hang/poll mode. Invalidate the cached
+		// URL and mark a per-item data cooldown so hang does not immediately
+		// re-hammer the CDN after a successful requestdl (D-015c).
 		if proxyResp.StatusCode == http.StatusTooManyRequests ||
 			proxyResp.StatusCode >= 500 {
 			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
 			slog.Warn("GET: CDN transient error, entering hang/poll mode",
 				"path", file.Path,
 				"status", proxyResp.StatusCode,
@@ -234,14 +242,8 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 				"item_id", file.ItemID,
 				"file_id", file.FileID,
 			)
-			// Invalidate the cached CDN URL so the hang loop fetches a fresh one.
-			if s.cfg.CDNTtlMinutes > 0 {
-				expiry := time.Now().Add(-1 * time.Hour)
-				if err := s.store.SetCDNURL(file.ID, "", expiry); err != nil {
-					slog.Error("GET: failed to invalidate CDN URL cache",
-						"path", file.Path, "error", err)
-				}
-			}
+			s.markCDNDataCooldown(file.ItemID, cdnPollInterval)
+			s.invalidateCDNURLCache(file)
 			s.handleGetCDNHang(w, r, file)
 			return
 		}
@@ -249,6 +251,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		// Check for non-success status that won't be repaired.
 		if proxyResp.StatusCode != http.StatusOK && proxyResp.StatusCode != http.StatusPartialContent {
 			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
 
 			// If the CDN returned 403/404 even after refreshing the URL, the
 			// file is not available. Cache this failure so subsequent requests
@@ -283,31 +286,26 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		// TorBox's CDN sometimes returns HTTP 200/206 with a TEXT error body
 		// (e.g. "Too many requests" or an HTML page) instead of a proper
 		// 429/5xx status when it is rate-limiting or erroring. The status
-		// checks above treat that as success, so io.Copy below streams the
+		// checks above treat that as success, so io.Copy below would stream the
 		// error text to the client. Under rclone's vfs-cache (cache-mode
-		// full) that error text gets written to the cache AS THE FILE'S DATA,
-		// permanently corrupting the file until the cache entry is purged:
-		// ffprobe then reports duration=N/A / mis-detects the format, Plex
-		// playback fails, and *arrs flag good remuxes as "Sample". Real CDN
-		// media is binary; a text/html/json content-type is an error body, so
-		// treat it like a transient 429 (invalidate the URL, hang/poll).
-		if ct := strings.ToLower(proxyResp.Header.Get("Content-Type")); strings.HasPrefix(ct, "text/") || strings.Contains(ct, "html") || strings.Contains(ct, "json") {
+		// full) that error text gets written to the cache AS THE FILE'S DATA.
+		// Real CDN media is binary; a text/html/json content-type is an error body.
+		if isCDNDisguisedErrorBody(proxyResp.Header.Get("Content-Type")) {
+			ct := proxyResp.Header.Get("Content-Type")
 			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
 			slog.Warn("GET: CDN returned a text/error body on a 2xx data response (disguised rate-limit/error) — not streaming, entering hang/poll",
 				"path", file.Path, "content_type", ct, "status", proxyResp.StatusCode,
 				"source", file.Source, "item_id", file.ItemID, "file_id", file.FileID,
 			)
-			if s.cfg.CDNTtlMinutes > 0 {
-				expiry := time.Now().Add(-1 * time.Hour)
-				if err := s.store.SetCDNURL(file.ID, "", expiry); err != nil {
-					slog.Error("GET: failed to invalidate CDN URL cache", "path", file.Path, "error", err)
-				}
-			}
+			s.markCDNDataCooldown(file.ItemID, cdnPollInterval)
+			s.invalidateCDNURLCache(file)
 			s.handleGetCDNHang(w, r, file)
 			return
 		}
 
 		// Stream the CDN response directly to the client.
+		// Slot stays held until stream completes (release on return).
 		mime := file.MimeType
 		if mime == "" {
 			mime = "application/octet-stream"
@@ -322,9 +320,6 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 			w.WriteHeader(http.StatusOK)
 		}
 
-		// Acquire a CDN connection slot to prevent excessive concurrent
-		// connections from causing TorBox CDN 429s.
-		s.AcquireCDNConn()
 		defer s.ReleaseCDNConn()
 		defer proxyResp.Body.Close()
 
@@ -347,6 +342,26 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 
 	// All attempts exhausted without success.
 	http.Error(w, "CDN proxy error after retries", http.StatusBadGateway)
+}
+
+// isCDNDisguisedErrorBody reports whether a CDN Content-Type looks like an
+// error page rather than binary media (TorBox sometimes returns 200 with
+// text rate-limit bodies).
+func isCDNDisguisedErrorBody(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return strings.HasPrefix(ct, "text/") || strings.Contains(ct, "html") || strings.Contains(ct, "json")
+}
+
+// invalidateCDNURLCache clears any cached CDN URL for the file so hang/poll
+// re-fetches via requestdl.
+func (s *Server) invalidateCDNURLCache(file *metadata.FileRecord) {
+	if s.cfg.CDNTtlMinutes <= 0 {
+		return
+	}
+	expiry := time.Now().Add(-1 * time.Hour)
+	if err := s.store.SetCDNURL(file.ID, "", expiry); err != nil {
+		slog.Error("GET: failed to invalidate CDN URL cache", "path", file.Path, "error", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -587,17 +602,22 @@ func (s *Server) tryCDNFallback(path string) (string, error) {
 	return "", fmt.Errorf("all alternatives failed: %w", lastErr)
 }
 
-// cdnPollInterval is how long to wait between CDN URL fetch attempts when
-// the CDN is unavailable and we are hanging the connection open.
+// cdnPollInterval is how long to wait between CDN recovery attempts when
+// the CDN is unavailable and we are hanging the connection open. Also used
+// as the default per-item data cooldown after a CDN data 429.
 const cdnPollInterval = 15 * time.Second
 
-// handleGetCDNHang is entered when the CDN URL cannot be fetched and we want
-// to avoid returning an error (which rclone counts toward maxErrorCount=10).
+const maxCDNPollInterval = 5 * time.Minute
+
+// handleGetCDNHang is entered when the CDN URL cannot be fetched, or when CDN
+// *data* returns a transient error, and we want to avoid returning an error
+// (which rclone counts toward maxErrorCount=10).
 //
-// It sends success HTTP headers immediately, then polls fetchCDNURL with
-// exponential backoff when rate-limited (starts at cdnPollInterval, doubles
-// on each 429 to a 5-minute max). Once a URL is obtained, it proxies the
-// file data from the CDN transparently.
+// It sends success HTTP headers immediately, then:
+//  1. Waits for any per-item CDN data cooldown (lets TorBox drain connections)
+//  2. Fetches a CDN URL (with exponential backoff on requestdl 429)
+//  3. Proxies range data; on data 429/5xx/text-error, extends cooldown,
+//     backs off, and retries — never streaming error bodies to the client
 //
 // If the client disconnects (context cancelled), we clean up and exit.
 // If rclone's --timeout (default 5m) fires, the connection drops and rclone
@@ -642,91 +662,148 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 		w.WriteHeader(http.StatusOK)
 	}
 
-	// Poll for CDN URL with exponential backoff on rate-limit errors.
 	pollInterval := cdnPollInterval
-	const maxPollInterval = 5 * time.Minute
+	proxyClient := &http.Client{Timeout: 30 * time.Second}
 
-	var cdnURL string
 	for {
-		var fetchErr error
-		cdnURL, fetchErr = s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
+		// Drain window: do not re-hit CDN data until cooldown expires.
+		if err := s.waitCDNDataCooldown(r.Context(), file.ItemID); err != nil {
+			slog.Debug("client disconnected while waiting for CDN data cooldown",
+				"path", file.Path,
+			)
+			return
+		}
+
+		cdnURL, fetchErr := s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
 		if fetchErr != nil {
-			// Primary not available — try alternatives before looping.
 			cdnURL, fetchErr = s.tryCDNFallback(file.Path)
 		}
-		if fetchErr == nil {
-			slog.Info("CDN URL recovered, proxying data",
-				"path", file.Path,
-				"source", file.Source,
-				"item_id", file.ItemID,
-				"file_id", file.FileID,
-			)
-			break
+		if fetchErr != nil {
+			// Exponential backoff when rate-limited by TorBox's per-item
+			// requestdl limit. Keep doubling until max cap.
+			if strings.Contains(fetchErr.Error(), "unexpected status 429") {
+				pollInterval *= 2
+				if pollInterval > maxCDNPollInterval {
+					pollInterval = maxCDNPollInterval
+				}
+				slog.Warn("GET (hang): rate-limited on requestdl, increasing poll backoff",
+					"path", file.Path,
+					"source", file.Source,
+					"item_id", file.ItemID,
+					"file_id", file.FileID,
+					"next_poll", pollInterval,
+					"error", fetchErr,
+				)
+			} else {
+				slog.Debug("GET (hang): CDN URL still unavailable",
+					"path", file.Path, "error", fetchErr, "next_poll", pollInterval,
+				)
+			}
+			select {
+			case <-r.Context().Done():
+				slog.Debug("client disconnected while waiting for CDN", "path", file.Path)
+				return
+			case <-time.After(pollInterval):
+			}
+			continue
 		}
 
-		// Exponential backoff when rate-limited by TorBox's per-item
-		// requestdl limit. Keep doubling until max cap, letting the rate
-		// limit reset between attempts.
-		if strings.Contains(fetchErr.Error(), "unexpected status 429") {
-			pollInterval *= 2
-			if pollInterval > maxPollInterval {
-				pollInterval = maxPollInterval
+		// Cache the recovered CDN URL.
+		if s.cfg.CDNTtlMinutes > 0 {
+			expiry := time.Now().Add(time.Duration(s.cfg.CDNTtlMinutes) * time.Minute)
+			if err := s.store.SetCDNURL(file.ID, cdnURL, expiry); err != nil {
+				slog.Error("GET (hang): failed to cache CDN URL after recovery", "path", file.Path, "error", err)
 			}
-			slog.Warn("GET (hang): rate-limited, increasing poll backoff",
+		}
+
+		slog.Info("CDN URL recovered, attempting data proxy",
+			"path", file.Path,
+			"source", file.Source,
+			"item_id", file.ItemID,
+			"file_id", file.FileID,
+		)
+
+		// Respect cooldown again in case another request extended it.
+		if err := s.waitCDNDataCooldown(r.Context(), file.ItemID); err != nil {
+			slog.Debug("client disconnected while waiting for CDN data cooldown", "path", file.Path)
+			return
+		}
+
+		s.AcquireCDNConn()
+		proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, cdnURL, http.NoBody)
+		if err != nil {
+			s.ReleaseCDNConn()
+			slog.Error("GET (hang): failed to create CDN proxy request", "path", file.Path, "error", err)
+			return
+		}
+		proxyReq.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", srvRange.Start, srvRange.End))
+
+		proxyResp, err := proxyClient.Do(proxyReq)
+		if err != nil {
+			s.ReleaseCDNConn()
+			slog.Warn("GET (hang): CDN proxy request failed, will retry",
+				"path", file.Path, "error", err, "next_poll", pollInterval,
+			)
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(pollInterval):
+			}
+			continue
+		}
+
+		// Transient CDN data failure — do not stream error body; cool down and retry.
+		if proxyResp.StatusCode == http.StatusTooManyRequests || proxyResp.StatusCode >= 500 ||
+			isCDNDisguisedErrorBody(proxyResp.Header.Get("Content-Type")) {
+			status := proxyResp.StatusCode
+			ct := proxyResp.Header.Get("Content-Type")
+			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
+
+			s.markCDNDataCooldown(file.ItemID, pollInterval)
+			pollInterval *= 2
+			if pollInterval > maxCDNPollInterval {
+				pollInterval = maxCDNPollInterval
+			}
+			slog.Warn("GET (hang): CDN data still unavailable, backing off",
 				"path", file.Path,
+				"status", status,
+				"content_type", ct,
 				"source", file.Source,
 				"item_id", file.ItemID,
 				"file_id", file.FileID,
 				"next_poll", pollInterval,
-				"error", fetchErr,
 			)
+			s.invalidateCDNURLCache(file)
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(pollInterval):
+			}
+			continue
 		}
 
-		select {
-		case <-r.Context().Done():
-			slog.Debug("client disconnected while waiting for CDN",
-				"path", file.Path,
+		if proxyResp.StatusCode != http.StatusOK && proxyResp.StatusCode != http.StatusPartialContent {
+			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
+			// Headers already sent; cannot change status. Log and end.
+			slog.Error("GET (hang): CDN returned non-success after recovery",
+				"path", file.Path, "status", proxyResp.StatusCode,
 			)
 			return
-		case <-time.After(pollInterval):
 		}
-	}
 
-	// Cache the recovered CDN URL.
-	if s.cfg.CDNTtlMinutes > 0 {
-		expiry := time.Now().Add(time.Duration(s.cfg.CDNTtlMinutes) * time.Minute)
-		if err := s.store.SetCDNURL(file.ID, cdnURL, expiry); err != nil {
-			slog.Error("GET (hang): failed to cache CDN URL after recovery", "path", file.Path, "error", err)
+		// Success — stream and exit.
+		written, copyErr := io.Copy(w, proxyResp.Body)
+		proxyResp.Body.Close()
+		s.ReleaseCDNConn()
+		if copyErr != nil {
+			slog.Debug("GET (hang): error streaming CDN data", "path", file.Path, "written", written, "error", copyErr)
+		} else {
+			slog.Debug("GET (hang): finished streaming", "path", file.Path, "bytes", written)
 		}
-	}
-
-	// Proxy the data from CDN, streaming directly to the client.
-	// Acquire a CDN connection slot to respect the max concurrent connections limit.
-	s.AcquireCDNConn()
-	defer s.ReleaseCDNConn()
-
-	proxyClient := &http.Client{Timeout: 30 * time.Second}
-	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, cdnURL, http.NoBody)
-	if err != nil {
-		slog.Error("GET (hang): failed to create CDN proxy request", "path", file.Path, "error", err)
 		return
 	}
-	proxyReq.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", srvRange.Start, srvRange.End))
-
-	proxyResp, err := proxyClient.Do(proxyReq)
-	if err != nil {
-		slog.Error("GET (hang): CDN proxy request failed", "path", file.Path, "error", err)
-		return
-	}
-	defer proxyResp.Body.Close()
-
-	// Stream CDN data directly to the client.
-	written, copyErr := io.Copy(w, proxyResp.Body)
-	if copyErr != nil {
-		slog.Debug("GET (hang): error streaming CDN data", "path", file.Path, "written", written, "error", copyErr)
-	}
-
-	slog.Debug("GET (hang): finished streaming", "path", file.Path, "bytes", written)
 }
 
 // ---------------------------------------------------------------------------

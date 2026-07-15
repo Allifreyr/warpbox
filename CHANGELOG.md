@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- CDN hang/poll no longer thrash-retries immediately after a TorBox CDN *data* 429 (e.g. rapid `CDN transient error` / `CDN URL recovered` loops on thumbnail or hover-play). Per-item data cooldown, hang-side data retry with backoff, and acquiring the CDN connection semaphore *before* the upstream request reduce concurrent pressure and avoid streaming error bodies.
+
 ## [v0.7.1-v0.3.1] - 2026-07-15
 
 ### Fixed

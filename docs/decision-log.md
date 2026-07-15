@@ -123,6 +123,31 @@ This page documents all significant architectural and technical decisions made d
 - **Implementation:** `internal/server/get.go` — `handleGetCDNHang` poll loop.
 - **Issue:** (none — discovered during deployment log review)
 
+## D-015c: CDN data 429 cooldown + hang data retry + semaphore-before-Do (extends D-015/b)
+
+- **Date:** 2026-07-15
+- **Context:** Production logs showed sub-second loops of
+  `CDN transient error, entering hang/poll mode` (status=429) then
+  `CDN URL recovered, proxying data` for the same file. TorBox CDN data was
+  rate-limiting concurrent ranges (thumbnails/hover-play on multi-file
+  torrents). `requestdl` still succeeded immediately, so hang re-proxied
+  without waiting — amplifying CDN pressure. Separately,
+  `AcquireCDNConn` ran only *after* a successful CDN response in
+  `streamFileContent`, so `max_cdn_connections` did not limit concurrent
+  `client.Do` calls. Hang also streamed the first post-recovery response
+  without checking 429/text error bodies.
+- **Decision:**
+  1. Per-`item_id` CDN **data** cooldown (default 15s) when data returns
+     429/5xx/disguised text error; hang waits before re-proxying.
+  2. Hang loops on data failures with exponential backoff; never
+     `io.Copy` error bodies after success headers.
+  3. Acquire CDN semaphore **before** the upstream CDN request in
+     `streamFileContent`.
+- **Rationale:** Matches original D-015 “give CDN time to drain” intent when
+  the bottleneck is data, not requestdl. No config/schema/path changes.
+- **Implementation:** `internal/server/get.go`, `internal/server/server.go`.
+- **Issue:** (context.txt Widow’s Bay / explorer thumbnail)
+
 ## D-016: CDN connection semaphore + reduced default concurrency 8→4
 
 - **Date:** 2026-06-11

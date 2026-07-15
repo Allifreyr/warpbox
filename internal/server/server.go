@@ -71,6 +71,11 @@ type Server struct {
 	// CDN connection semaphore: limits concurrent proxy connections to TorBox CDN.
 	cdnSem chan struct{}
 
+	// Per-item cooldown after CDN *data* 429/5xx so hang/poll does not immediately
+	// re-hammer the CDN once requestdl returns a fresh URL (D-015c).
+	cdnDataCooldown   map[int64]time.Time
+	cdnDataCooldownMu sync.Mutex
+
 	// Stop channel for periodic cleanup goroutines.
 	cleanupStopCh chan struct{}
 
@@ -191,6 +196,7 @@ func New(cfg Config, store *metadata.Store, torBox *torbox.Client, queue *thrott
 
 		negativeCache:          make(map[string]*negativeCacheEntry),
 		torrentFailures:        make(map[int64]*torrentFailureTracker),
+		cdnDataCooldown:         make(map[int64]time.Time),
 		cleanupStopCh:          make(chan struct{}),
 		cdnSem:                 make(chan struct{}, maxConns),
 		negativeCacheMaxEntries:  cfg.NegativeCacheMaxEntries,
@@ -262,6 +268,57 @@ func (s *Server) ReleaseCDNConn() {
 	s.cdnSem <- struct{}{}
 }
 
+// markCDNDataCooldown records that TorBox CDN data for this item was rate-limited
+// or otherwise temporarily unavailable. Concurrent hang loops for the same
+// item_id wait until this time before re-proxying, giving the CDN time to drain.
+// If a longer cooldown is already set, it is kept.
+func (s *Server) markCDNDataCooldown(itemID int64, d time.Duration) {
+	if d <= 0 {
+		d = cdnPollInterval
+	}
+	until := time.Now().Add(d)
+	s.cdnDataCooldownMu.Lock()
+	defer s.cdnDataCooldownMu.Unlock()
+	if existing, ok := s.cdnDataCooldown[itemID]; ok && existing.After(until) {
+		return
+	}
+	s.cdnDataCooldown[itemID] = until
+}
+
+// waitCDNDataCooldown blocks until any per-item CDN data cooldown has expired,
+// or until ctx is cancelled. Returns ctx.Err() on cancel.
+func (s *Server) waitCDNDataCooldown(ctx context.Context, itemID int64) error {
+	for {
+		s.cdnDataCooldownMu.Lock()
+		until, ok := s.cdnDataCooldown[itemID]
+		s.cdnDataCooldownMu.Unlock()
+		if !ok {
+			return nil
+		}
+		wait := time.Until(until)
+		if wait <= 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// sweepCDNDataCooldown removes expired per-item CDN data cooldowns.
+func (s *Server) sweepCDNDataCooldown() {
+	s.cdnDataCooldownMu.Lock()
+	defer s.cdnDataCooldownMu.Unlock()
+	now := time.Now()
+	for id, until := range s.cdnDataCooldown {
+		if !now.Before(until) {
+			delete(s.cdnDataCooldown, id)
+		}
+	}
+}
+
 // ConfigPath returns the path to the config file for runtime log level toggle.
 func (s *Server) ConfigPath() string {
 	return s.configPath
@@ -290,6 +347,7 @@ func (s *Server) startCleanupLoop() {
 			case <-cleanupTick.C:
 				s.sweepNegativeCache()
 				s.sweepCircuitBreaker()
+				s.sweepCDNDataCooldown()
 			case <-statsTick.C:
 				s.recordStats()
 				if s.statsRetention > 0 {

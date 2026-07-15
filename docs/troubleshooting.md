@@ -67,6 +67,8 @@ This page covers common problems, what they mean, and how to fix them.
 | Circuit breaker tripped on a torrent | A torrent with repeated failures is quarantined (default 5 minutes). The breaker auto-resets. This is normal — it stops one bad torrent from burning the rate budget. |
 | TorBox CDN regional outage | Outside warpbox's control. Hang/poll is designed for this — it holds the connection open and retries with exponential backoff (15s → 30s → 60s → 2min → 5min max on repeated 429s). |
 | `cdn_url_ttl_minutes` set too high | Stale URLs fail on first use, triggering repair. Default 120 minutes is safe. Reduce if you see frequent stale URL warnings. |
+| Rapid alternating `CDN transient error` / `CDN URL recovered` every ~300ms | TorBox CDN rate-limited **data** (often when thumbnails/probes open several concurrent ranges on the same torrent). Warpbox now cools down per `item_id` and retries data with backoff instead of re-proxying immediately. Upgrade if you still see sub-second thrash; keep rclone `--transfers` low. |
+| Folder lists fine but 1–2 files have no thumbnail / hover-play fails | Same as above: listing is free (SQLite); bytes hit the CDN. Wait for hang recovery or open the file for full play after a short pause. |
 
 ## Web UI not accessible
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -154,5 +155,97 @@ func TestCDNSemaphoreAcquireRelease(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("AcquireCDNConn deadlocked — slot was not released properly")
+	}
+}
+
+func TestIsCDNDisguisedErrorBody(t *testing.T) {
+	cases := []struct {
+		ct   string
+		want bool
+	}{
+		{"video/mp4", false},
+		{"application/octet-stream", false},
+		{"text/plain", true},
+		{"text/html; charset=utf-8", true},
+		{"application/json", true},
+		{"application/vnd.apple.mpegurl", false}, // contains no html/json/text prefix
+	}
+	for _, tc := range cases {
+		if got := isCDNDisguisedErrorBody(tc.ct); got != tc.want {
+			t.Errorf("isCDNDisguisedErrorBody(%q) = %v, want %v", tc.ct, got, tc.want)
+		}
+	}
+}
+
+func TestMarkAndWaitCDNDataCooldown(t *testing.T) {
+	s := &Server{
+		cdnDataCooldown: make(map[int64]time.Time),
+	}
+	const itemID int64 = 46874023
+	const cool = 80 * time.Millisecond
+
+	s.markCDNDataCooldown(itemID, cool)
+	start := time.Now()
+	if err := s.waitCDNDataCooldown(context.Background(), itemID); err != nil {
+		t.Fatalf("waitCDNDataCooldown: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < cool-20*time.Millisecond {
+		t.Errorf("wait returned too early: elapsed=%v cool=%v", elapsed, cool)
+	}
+
+	// No cooldown: wait returns immediately.
+	start = time.Now()
+	if err := s.waitCDNDataCooldown(context.Background(), 999); err != nil {
+		t.Fatalf("wait with no cooldown: %v", err)
+	}
+	if time.Since(start) > 50*time.Millisecond {
+		t.Error("wait with no cooldown should be immediate")
+	}
+}
+
+func TestMarkCDNDataCooldownKeepsLonger(t *testing.T) {
+	s := &Server{
+		cdnDataCooldown: make(map[int64]time.Time),
+	}
+	s.markCDNDataCooldown(1, 200*time.Millisecond)
+	s.markCDNDataCooldown(1, 10*time.Millisecond) // shorter — should not shorten
+
+	s.cdnDataCooldownMu.Lock()
+	until := s.cdnDataCooldown[1]
+	s.cdnDataCooldownMu.Unlock()
+	if time.Until(until) < 100*time.Millisecond {
+		t.Errorf("longer cooldown was shortened: remaining %v", time.Until(until))
+	}
+}
+
+func TestWaitCDNDataCooldownCancelled(t *testing.T) {
+	s := &Server{
+		cdnDataCooldown: make(map[int64]time.Time),
+	}
+	s.markCDNDataCooldown(7, 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := s.waitCDNDataCooldown(ctx, 7)
+	if err == nil {
+		t.Fatal("expected context error")
+	}
+}
+
+func TestSweepCDNDataCooldown(t *testing.T) {
+	s := &Server{
+		cdnDataCooldown: map[int64]time.Time{
+			1: time.Now().Add(-time.Second),
+			2: time.Now().Add(time.Minute),
+		},
+	}
+	s.sweepCDNDataCooldown()
+	s.cdnDataCooldownMu.Lock()
+	defer s.cdnDataCooldownMu.Unlock()
+	if _, ok := s.cdnDataCooldown[1]; ok {
+		t.Error("expired cooldown should be removed")
+	}
+	if _, ok := s.cdnDataCooldown[2]; !ok {
+		t.Error("active cooldown should remain")
 	}
 }

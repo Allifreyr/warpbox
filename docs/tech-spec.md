@@ -284,7 +284,7 @@ Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
      a transient error: invalidate the cached CDN URL and enter hang/poll mode.
    - **200/206 (binary):** Proceed to streaming
 
-5. **CDN connection semaphore.** Before proxy streaming, `AcquireCDNConn()` blocks until a slot is available. `ReleaseCDNConn()` returns the slot when done. Capacity: `max_cdn_connections` (default 4). Channel-based with pre-filled tokens.
+5. **CDN connection semaphore.** Before the upstream CDN `client.Do` (not only before `io.Copy`), `AcquireCDNConn()` blocks until a slot is available. `ReleaseCDNConn()` returns the slot when the attempt ends (error path or finished stream). Capacity: `max_cdn_connections` (default 4). Channel-based with pre-filled tokens.
 
 6. **Streaming.** Set response headers:
    - `Content-Type`: from file's MIME type, or `"application/octet-stream"`
@@ -299,20 +299,13 @@ Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
 
 ### Hang/Poll Mode (`handleGetCDNHang`)
 
-Entered when the CDN URL cannot be obtained (API failure, circuit breaker trip) or the CDN returns transient errors (429/5xx). The goal is to avoid returning an error to rclone, which counts errors toward `maxErrorCount=10`:
+Entered when the CDN URL cannot be obtained (API failure, circuit breaker trip) or the CDN returns transient errors (429/5xx / disguised text body). The goal is to avoid returning an error to rclone, which counts errors toward `maxErrorCount=10`:
 
 1. **Immediate success headers.** Send `200 OK` or `206 Partial Content` with full response headers (Content-Type, Content-Length, Accept-Ranges, Content-Range) BEFORE any data is available. This makes rclone think the connection succeeded (it will wait for data).
 
-2. **Poll loop with 429 backoff.** Starts at `cdnPollInterval` (15s). If
-   `fetchCDNURL()` returns a 429 (per-item `requestdl` rate limit), the poll
-   interval doubles exponentially (30s → 60s → 2min → 5min max). Non-429
-   failures keep the current interval. Uses `time.After(interval)` instead of
-   a fixed ticker:
-   - URL recovered → cache it, proxy data from CDN, exit
-   - Still unavailable → `select { case <-r.Context().Done(): cleanup and return | case <-time.After(interval): continue }`
-   - Client disconnect → clean exit (context cancelled), logged at DEBUG
+2. **Per-item data cooldown.** After a CDN *data* 429/5xx (or disguised text error), mark `item_id` cool for at least `cdnPollInterval` (15s). Hang waits on this before re-proxying so a successful `requestdl` does not immediately re-hammer the CDN.
 
-3. **Data proxy after recovery.** Acquire CDN connection slot, proxy GET with content range, `io.Copy` to client.
+3. **Poll / recovery loop.** Fetch URL with exponential backoff on requestdl 429 (15s → 5min max). On URL success: acquire semaphore, GET range from CDN. On data 429/5xx/text-error: do **not** stream the body; extend cooldown, back off, retry. On 200/206 binary media: `io.Copy` and exit. Client disconnect → clean exit (context cancelled), logged at DEBUG.
 
 ### Byte-Range Parsing (`parseRange`)
 
