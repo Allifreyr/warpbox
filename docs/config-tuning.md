@@ -181,14 +181,17 @@ customise the existing ones to match your naming convention.
 
 ### Force into a library: `forced{virtual_path_name}`
 
-Tag a torrent on TorBox with **`forced` + the virtual path name** to force it into that mount (and out of other mounts):
+Tag a torrent on **TorBox** (not in `config.yml`) with **`forced` + the exact virtual path `name`** to force it into that mount (and out of other mounts).
 
-| Virtual path `name` | TorBox tag |
-|---------------------|------------|
+| Virtual path `name` | TorBox dashboard tag |
+|---------------------|----------------------|
 | `tv` | `forcedtv` |
-| `movies` | `forcedmovies` |
+| `movies` | **`forcedmovies`** (not `forcedmovie`) |
 | `anime` | `forcedanime` |
 | `animemovies` | `forcedanimemovies` |
+| `anime-movies` | `forcedanime-movies` (hyphen kept: `forced` + full name) |
+
+**`override_tags` vs force tags:** Force tags are **automatic** for every configured path — you do **not** need to list `forcedtv` / `forcedmovies` / etc. under `library.override_tags`. That list is for **`rename`** and any *extra* custom tags you still match via regex. Listing force tags there is harmless but redundant.
 
 **How it works:**
 1. On sync, Warpbox stores tags that are either in `library.override_tags` or equal to `forced` + a configured path name.
@@ -199,7 +202,7 @@ Tag a torrent on TorBox with **`forced` + the virtual path name** to force it in
 
 You do **not** need to put `|forcedtv` / `|forcedmovies` in every regex. Force routing is semantic.
 
-**Movies tip:** Do **not** set `directory_include: "forcedmovies"` alone — that would hide every untagged movie. Movies should use **exclude-only** TV patterns; use the `forcedmovies` tag when a TV-like name must still appear under movies.
+**Movies tip:** Do **not** set `directory_include: "forcedmovies"` alone — that would hide every untagged movie. Movies should use **exclude-only** TV patterns; use the TorBox tag **`forcedmovies`** when a TV-like name must still appear under movies.
 
 Example virtual paths (regex for automatic split; force tags for exceptions):
 

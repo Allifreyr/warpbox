@@ -154,24 +154,24 @@ library:
 
   # Tags from the TorBox dashboard that affect library behavior.
   #
-  # Force-into-library (automatic — no need to list them here):
-  #   For each virtual_paths[].name, tag "forced" + name on TorBox forces
-  #   that item into that mount (and out of other mounts). Examples:
-  #     path "tv"           → tag forcedtv
-  #     path "movies"       → tag forcedmovies
-  #     path "anime"        → tag forcedanime
-  #     path "animemovies"  → tag forcedanimemovies
-  #   Matching is semantic (not regex-only): a forced tag bypasses normal
-  #   directory include/exclude for that mount. Virtual paths are unchanged.
+  # --- Force-into-library (tag on TorBox, not listed below) ---
+  # For each virtual_paths[].name, TorBox tag = "forced" + that name exactly:
+  #   name: tv              →  forcedtv
+  #   name: movies          →  forcedmovies   (not "forcedmovie")
+  #   name: anime           →  forcedanime
+  #   name: animemovies     →  forcedanimemovies
+  #   name: anime-movies    →  forcedanime-movies  (hyphen kept)
+  # That forces the item into that mount and out of others (semantic match;
+  # no need to add |forced… to your regexes). Stored paths are unchanged.
+  # Force tags are always allowlisted for configured paths — do not put them
+  # in override_tags unless you want them listed for documentation.
   #
-  # rename: Uses the TorBox dashboard-editable torrent Name as the virtual
-  #   directory name instead of the S3-derived path. Single-file torrents are
-  #   wrapped in a directory. Only the top-level directory is replaced.
-  #   NOTE: Renaming with this tag active WILL change the virtual path.
+  # --- override_tags (config) ---
+  # Only needs "rename" (default) plus any extra custom tags you match in
+  # directory_include/exclude regexes. Default when empty: ["rename"].
   #
-  # override_tags: extra tags to store for advanced regex use, plus "rename".
-  # Force tags for configured paths are always allowed even if omitted here.
-  # Default: ["rename"]
+  # rename: TorBox tag "rename" uses the dashboard torrent Name as the
+  #   virtual directory (path rewrite — may rescan in Plex). See docs.
   # override_tags:
   #   - rename
 

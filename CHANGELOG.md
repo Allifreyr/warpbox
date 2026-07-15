@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Preferred movies force tag is **`forcedmovies`** (not `forcedmovie`). Force routing no longer depends on hand-wiring `|forcedtv` / `|forcedmovie` into include/exclude patterns.
+- Docs / `config.yml.example`: clearer split between TorBox force tags (`forced` + path name) and config `override_tags` (mainly `rename`).
 
 ## [v0.7.1-v0.4.0] - 2026-07-15
 
