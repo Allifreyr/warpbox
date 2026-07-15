@@ -159,6 +159,12 @@ library:
   #     directory_exclude for movies to force-classify a torrent as TV.
   #     The virtual path is NOT changed — only filter matching is affected.
   #
+  #   - forcedmovie: Appends "forcedmovie" to the directory name during
+  #     filter matching only. Add |forcedmovie to your directory_include
+  #     for movies and directory_exclude for TV to force-classify a torrent
+  #     as a movie. The virtual path is NOT changed — only filter matching
+  #     is affected.
+  #
   #   - rename: Uses the TorBox dashboard-editable torrent Name as the
   #     virtual directory name instead of the S3-derived path. Useful when
   #     the S3 path is wrong or you want to control how Plex sees the
@@ -167,9 +173,10 @@ library:
   #     NOTE: Renaming on the dashboard with this tag active WILL change
   #     the virtual path, which may trigger a Plex rescan.
   #
-  # Default: ["forcedtv", "rename"]
+  # Default: ["forcedtv", "forcedmovie", "rename"]
   # override_tags:
   #   - forcedtv
+  #   - forcedmovie
   #   - rename
 
 auth:

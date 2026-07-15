@@ -445,7 +445,7 @@ The core request executor:
 
 `SyncWorker` manages the periodic TorBox → SQLite synchronisation loop:
 
-- **`NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, overrideTags)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. `overrideTags` (default ["forcedtv", "rename"]) specifies which TorBox dashboard tags participate in filter matching and path overrides. Does not start.
+- **`NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, overrideTags)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. `overrideTags` (default ["forcedtv", "forcedmovie", "rename"]) specifies which TorBox dashboard tags participate in filter matching and path overrides. Does not start.
 - **`Start(ctx)`** — stores `ctx` as `parentCtx`, creates a derived `cancelCtx`, calls `runLoop(ctx)`, closes `loopDone` channel on exit.
 - **`Stop()`** — calls the cancel function on the current loop, waits up to 90 seconds for `loopDone` to close. Safe to call multiple times or before `Start`.
 - **`Restart()`** — calls `Stop()`, creates a new derived context from `parentCtx`, launches `runLoop` in a new goroutine.

@@ -175,9 +175,9 @@ customise the existing ones to match your naming convention.
 
 ## Tag-Based Overrides
 
-Warpbox recognizes special tags from your TorBox dashboard to override virtual path behavior. Tags are configured via `library.override_tags` (default: `["forcedtv", "rename"]`).
+Warpbox recognizes special tags from your TorBox dashboard to override virtual path behavior. Tags are configured via `library.override_tags` (default: `["forcedtv", "forcedmovie", "rename"]`).
 
-### `forcedtv` — Force Classification
+### `forcedtv` — Force Classification as TV
 
 For torrents that lack traditional naming indicators (e.g. older TV shows or complete cartoon packs that get misclassified into `/movies` because they lack standard tags like `S01`, `Season`, or `Complete`), you can use the `forcedtv` tag to force them into the correct virtual library path.
 
@@ -187,26 +187,37 @@ For torrents that lack traditional naming indicators (e.g. older TV shows or com
 3. When Warpbox evaluates the `directory_include` and `directory_exclude` regexes, it appends the matching tags to the directory name (e.g. `Cow and Chicken forcedtv`).
 4. **Important**: The actual virtual path of the files is **never mutated** (preserving path stability, rclone cache, and Plex watch history). The tag is only used temporarily during filter matching.
 
-**Setup:** Add `forcedtv` (or `|forcedtv`) to your directory include and exclude regexes:
+### `forcedmovie` — Force Classification as Movie
+
+For torrents that contain TV-like naming markers but are actually movies (e.g. a movie with "Complete" or a year range in the title that triggers the TV regex), you can use the `forcedmovie` tag to force them into the movie virtual library path. This is the exact opposite of `forcedtv`.
+
+**How it works:** Identical to `forcedtv` — the tag `forcedmovie` is appended to the directory name during filter matching only. The virtual path is never changed.
+
+### Setup for `forcedtv` and `forcedmovie`
+
+Add `forcedtv` and `forcedmovie` to your directory include and exclude regexes:
 
 ```yaml
 library:
   override_tags:
     - forcedtv
+    - forcedmovie
     - rename
 
   virtual_paths:
     - name: movies
       directory_exclude: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b|forcedtv"
+      directory_include: "forcedmovie"
       file_regex: ".*\\.(mkv|mp4|avi)$"
       largest_file_only: true
     - name: tv
       directory_include: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b|forcedtv"
+      directory_exclude: "forcedmovie"
       file_regex: ".*\\.(mkv|mp4|avi)$"
       largest_file_only: true
 ```
 
-Once configured, tag the torrent on your TorBox dashboard with `forcedtv` and it will move to the TV section on the next sync.
+Once configured, tag the torrent on your TorBox dashboard with `forcedtv` or `forcedmovie` and it will move to the correct section on the next sync.
 
 ### `rename` — Override Virtual Directory Name
 
@@ -230,8 +241,8 @@ For torrents whose S3-derived directory name is incorrect or undesirable, the `r
 
 ### Combining Tags
 
-Tags can be combined. For example, tagging a torrent with both `rename` and `forcedtv`:
-- The virtual directory is renamed from the dashboard name (`rename`)
-- The tag `forcedtv` is appended during filter matching to override classification
+Tags can be combined freely. For example:
+- `rename` + `forcedtv`: Renames the virtual directory AND forces TV classification
+- `rename` + `forcedmovie`: Renames the virtual directory AND forces movie classification
 
-This is useful for shows like "Cow and Chicken" that have both a wrong S3 name and no TV indicators — you fix the name and force it into the TV library simultaneously.
+This is useful for content that has both a wrong S3 name and incorrect classification — you fix the name and force it into the correct library simultaneously.

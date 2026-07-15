@@ -469,3 +469,21 @@ func TestBuildFileRecordRenameSingleFile(t *testing.T) {
 		t.Errorf("Path = %q, want %q", rec.Path, "My Movie 2024/movie.mkv")
 	}
 }
+
+func TestBuildFileRecordWithForcedMovieTag(t *testing.T) {
+	f := torbox.TorrentFile{
+		ID:        10,
+		S3Path:    "abc123/Some.Movie.S01.2024/movie.mkv",
+		ShortName: "movie.mkv",
+	}
+	overrideTags := map[string]bool{"forcedmovie": true}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"forcedmovie"}, overrideTags, "")
+
+	if rec.FilterTags != "forcedmovie" {
+		t.Errorf("FilterTags = %q, want %q", rec.FilterTags, "forcedmovie")
+	}
+	// Virtual path must remain unchanged (derived from S3 path only).
+	if rec.Path != "Some.Movie.S01.2024/movie.mkv" {
+		t.Errorf("Path = %q, want %q (path must not include tags)", rec.Path, "Some.Movie.S01.2024/movie.mkv")
+	}
+}
