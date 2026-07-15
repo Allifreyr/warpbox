@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.1-v0.3.3] - 2026-07-15
+
 ### Added
 - Optional per–virtual-path `min_file_size` and `max_file_size` (e.g. `300MB`, `10GB`) to hide files outside a size range under that library view only. Defaults unset (no bounds). Complements `largest_file_only`; size filters run after name/regex filters and before largest-file selection. No bitrate filter (TorBox does not expose duration/bitrate; probing would break zero-API browse).
 
@@ -158,7 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.1-v0.3.2...HEAD
+[Unreleased]: /compare/v0.7.1-v0.3.3...HEAD
+[v0.7.1-v0.3.3]: /compare/v0.7.1-v0.3.2...v0.7.1-v0.3.3
 [v0.7.1-v0.3.2]: /compare/v0.7.1-v0.3.1...v0.7.1-v0.3.2
 [v0.7.1-v0.3.1]: /compare/v0.7.1-v0.3.0...v0.7.1-v0.3.1
 [v0.7.1-v0.3.0]: /compare/v0.7.1-v0.2.0...v0.7.1-v0.3.0
