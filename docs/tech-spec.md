@@ -510,7 +510,11 @@ The `s3_path` from TorBox has the format `"<hash>/<path>"`. Path derivation rule
 
 ### Path Sanitization (`sanitizePathSegment`)
 
-Characters `\ / : * ? " < > | &` are replaced with `_`. All other characters (including valid Unicode, spaces, dots, hyphens) are preserved. The ampersand `&` is sanitized because it can cause filesystem path issues on some systems and is stripped by the official TorBox WebDAV.
+Characters `\ / : * ? " < > | &` are replaced with `_`. All other characters (including valid Unicode, spaces, dots, hyphens, and literal `%`) are preserved. The ampersand `&` is sanitized because it can cause filesystem path issues on some systems and is stripped by the official TorBox WebDAV.
+
+### WebDAV href encoding (`encodeDAVHref`)
+
+PROPFIND and directory-listing responses percent-encode each path segment when emitting `D:href` (via `url.PathEscape` per segment, preserving `/`). Stored SQLite paths and `displayname` remain unencoded. This keeps titles like `30% Iron Chef` readable while producing valid URI-references so clients (rclone) do not fail with `invalid URL escape`. Incoming requests are decoded by Go’s HTTP stack before path lookup, so GET/HEAD match the raw DB path.
 
 ### Change Hooks
 

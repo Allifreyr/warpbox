@@ -26,6 +26,7 @@ This page covers common problems, what they mean, and how to fix them.
 | PUID/PGID mismatch | Check the user ID on the host: `id <username>`. Set `PUID`/`PGID` to match. If Plex runs as UID 1001, use `PUID=1001, PGID=1001`. |
 | warpbox not reachable | Ensure warpbox started first. On bare metal, verify `curl http://localhost:1412/webdav/` responds. |
 | Mount directory doesn't exist | Create it: `mkdir -p /mnt/warpbox` |
+| `URL Join failed` / `invalid URL escape "% …"` for some episodes | Filenames with a literal `%` (e.g. `30% Iron Chef`) require Warpbox to percent-encode WebDAV hrefs. Upgrade to a build that includes `encodeDAVHref` (hrefs show `%25` for `%`). |
 
 ## Rate limit errors (429) still appearing
 

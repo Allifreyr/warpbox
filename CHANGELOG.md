@@ -5,6 +5,11 @@ All notable changes to Warpbox will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- WebDAV/HTTP directory listings now percent-encode each path segment in `href`s so files with a literal `%` in the title (e.g. `30% Iron Chef`, `.07%`) no longer break rclone with `URL Join failed` / `invalid URL escape`. Stored paths and display names are unchanged.
+
 ## [v0.7.1-v0.1.0] - 2026-07-10
 
 ### Added
