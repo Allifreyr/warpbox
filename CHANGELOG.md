@@ -7,8 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.1-v0.3.1] - 2026-07-15
+
 ### Fixed
 - WebDAV/HTTP directory listings now percent-encode each path segment in `href`s so files with a literal `%` in the title (e.g. `30% Iron Chef`, `.07%`) no longer break rclone with `URL Join failed` / `invalid URL escape`. Stored paths and display names are unchanged.
+
+## [v0.7.1-v0.3.0] - 2026-07-15
+
+### Added
+- TorBox dashboard `forcedmovie` classification override tag to default override tags, supporting movie classification overrides (forcing TV-pattern-matching torrents into the Movies library).
+- Documentation for `forcedmovie` tag in `config-tuning.md` and configuration example comments.
+- Test suite coverage for `forcedmovie` tag in library filter and sync worker.
+
+### Changed
+- Config default `override_tags` updated to include `"forcedmovie"`.
+
+## [v0.7.1-v0.2.0] - 2026-07-13
+
+### Added
+- TorBox dashboard `rename` tag support to override the virtual directory name using the editable torrent name.
+- Wraps single-file torrents in a directory named after their sanitized dashboard name.
+- Replaces the top-level directory for multi-file torrents, preserving internal subdirectories.
+- Test suite coverage for `rename` tag path replacement logic.
+
+### Changed
+- Config default `override_tags` updated to include `"rename"`.
 
 ## [v0.7.1-v0.1.0] - 2026-07-10
 
@@ -127,7 +150,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.1-v0.1.0...HEAD
+[Unreleased]: /compare/v0.7.1-v0.3.1...HEAD
+[v0.7.1-v0.3.1]: /compare/v0.7.1-v0.3.0...v0.7.1-v0.3.1
+[v0.7.1-v0.3.0]: /compare/v0.7.1-v0.2.0...v0.7.1-v0.3.0
+[v0.7.1-v0.2.0]: /compare/v0.7.1-v0.1.0...v0.7.1-v0.2.0
 [v0.7.1-v0.1.0]: /compare/v0.7.1...v0.7.1-v0.1.0
 [v0.7.0]: /compare/v0.6.0...v0.7.0
 [v0.6.0]: /compare/v0.5.4...v0.6.0
