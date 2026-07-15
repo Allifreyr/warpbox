@@ -390,21 +390,17 @@ func TestApplyFilter_EmptyFilterTags_NoChange(t *testing.T) {
 	}
 }
 
-func TestApplyFilter_WithFilterTags_ForcedMovieInMovies(t *testing.T) {
-	// Movies filter: exclude TV patterns + forcedtv.
-	// A torrent tagged with forcedmovie that has NO TV indicators stays in movies.
-	// This verifies the tag is stored but doesn't interfere with the movies filter.
-	f, err := NewFilter("/movies", "", "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|forcedtv", `.*\.(mkv|mp4|avi)$`, false)
+func TestApplyFilter_ForceTagIntoMoviesDespiteTVName(t *testing.T) {
+	// Semantic force: forcedmovies bypasses exclude even when name has "complete".
+	f, err := NewFilter("/movies", "", "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)", `.*\.(mkv|mp4|avi)$`, false)
 	if err != nil {
 		t.Fatalf("NewFilter failed: %v", err)
 	}
 
 	records := []metadata.FileRecord{
-		// Tagged forcedmovie, no TV indicators — stays in movies.
-		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Chowder/movie.mkv", Size: 5000, FilterTags: "forcedmovie"},
-		// Regular movie — stays in movies.
+		// Would be excluded by "complete" without force tag.
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Chowder Complete Collection/movie.mkv", Size: 5000, FilterTags: "forcedmovies"},
 		{ItemID: 2, Source: metadata.SourceTorrent, Path: "The.Matrix.1999/movie.mkv", Size: 5000},
-		// TV show — excluded from movies by S01 pattern.
 		{ItemID: 3, Source: metadata.SourceTorrent, Path: "Breaking.Bad.S01/ep1.mkv", Size: 1000},
 	}
 
@@ -422,35 +418,57 @@ func TestApplyFilter_WithFilterTags_ForcedMovieInMovies(t *testing.T) {
 		}
 	}
 	if !foundChowder {
-		t.Error("expected Chowder (forcedmovie tag) to stay in movies")
+		t.Error("expected Chowder (forcedmovies) in movies despite Complete in name")
 	}
 	if !foundMatrix {
 		t.Error("expected Matrix to stay in movies")
 	}
 }
 
-func TestApplyFilter_WithFilterTags_ForcedMovieExcludeFromTV(t *testing.T) {
-	// TV filter with "forcedmovie" added to directory_exclude.
-	// A torrent that normally lands in TV (has "complete" in name) is kicked out
-	// because the user tagged it forcedmovie and added |forcedmovie to TV's exclude.
-	f, err := NewFilter("/tv", "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|forcedtv", "(?i)forcedmovie", `.*\.(mkv|mp4|avi)$`, false)
+func TestApplyFilter_ForceTagExcludesOtherMounts(t *testing.T) {
+	// forcedmovies on item → not in TV even if name matches TV include.
+	tv, err := NewFilter("/tv", "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)", "", `.*\.(mkv|mp4|avi)$`, false)
 	if err != nil {
 		t.Fatalf("NewFilter failed: %v", err)
 	}
 
 	records := []metadata.FileRecord{
-		// Has "complete" — normally matches TV include. But forcedmovie tag + exclude → kicked out.
-		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Chowder Complete Collection/movie.mkv", Size: 5000, FilterTags: "forcedmovie"},
-		// Normal TV show — stays in TV.
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Chowder Complete Collection/movie.mkv", Size: 5000, FilterTags: "forcedmovies"},
 		{ItemID: 2, Source: metadata.SourceTorrent, Path: "Breaking.Bad.S01/ep1.mkv", Size: 1000},
 	}
 
-	got := f.Apply(records)
+	got := tv.Apply(records)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 record (only Breaking Bad), got %d", len(got))
 	}
 	if got[0].ItemID != 2 {
 		t.Errorf("expected Breaking Bad (item 2), got item %d", got[0].ItemID)
+	}
+}
+
+func TestApplyFilter_ForceTagAnimeMount(t *testing.T) {
+	anime, err := NewFilter("/anime", "(?i)subsplease", "", `.*\.mkv$`, false)
+	if err != nil {
+		t.Fatalf("NewFilter failed: %v", err)
+	}
+	movies, err := NewFilter("/movies", "", "(?i)S01|season", `.*\.mkv$`, false)
+	if err != nil {
+		t.Fatalf("NewFilter failed: %v", err)
+	}
+
+	records := []metadata.FileRecord{
+		// No subsplease in name — only force tag routes to anime.
+		{ItemID: 1, Path: "Odd Title/ep.mkv", Size: 500, FilterTags: "forcedanime"},
+		{ItemID: 2, Path: "The.Matrix.1999/m.mkv", Size: 5000},
+	}
+
+	a := anime.Apply(records)
+	if len(a) != 1 || a[0].ItemID != 1 {
+		t.Fatalf("anime mount: expected only forced item, got %+v", a)
+	}
+	m := movies.Apply(records)
+	if len(m) != 1 || m[0].ItemID != 2 {
+		t.Fatalf("movies: expected only Matrix (forcedanime excluded), got %+v", m)
 	}
 }
 

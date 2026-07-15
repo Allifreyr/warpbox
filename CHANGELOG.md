@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Generic force-into-library tags: TorBox tag `forced` + virtual path name (e.g. path `movies` → `forcedmovies`, path `anime` → `forcedanime`). Semantic filter routing includes the target mount and excludes other mounts without requiring force tags in every regex. Auto-allowlisted for configured paths; `override_tags` default is `["rename"]` plus those force tags.
+
+### Changed
+- Preferred movies force tag is **`forcedmovies`** (not `forcedmovie`). Force routing no longer depends on hand-wiring `|forcedtv` / `|forcedmovie` into include/exclude patterns.
+
 ## [v0.7.1-v0.4.0] - 2026-07-15
 
 ### Added

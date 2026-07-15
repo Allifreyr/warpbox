@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mainlink0435/warpbox/internal/config"
+	"github.com/mainlink0435/warpbox/internal/library"
 	"github.com/mainlink0435/warpbox/internal/metadata"
 	"github.com/mainlink0435/warpbox/internal/server"
 	"github.com/mainlink0435/warpbox/internal/throttle"
@@ -119,6 +120,13 @@ func main() {
 
 	throttleQueue.Start(ctx)
 
+	pathNames := make([]string, 0, len(cfg.Library.VirtualPaths))
+	for _, vp := range cfg.Library.VirtualPaths {
+		pathNames = append(pathNames, vp.Name)
+	}
+	// Allowlist = user override_tags (e.g. rename) + forced{name} for each virtual path.
+	tagAllowlist := library.ExpandOverrideTags(cfg.Library.OverrideTags, pathNames)
+
 	syncWorker := metadata.NewSyncWorker(
 		metadataStore,
 		torBoxClient,
@@ -128,7 +136,7 @@ func main() {
 		cfg.Sync.BypassCache,
 		*cfg.Sync.RetryAttempts,
 		time.Duration(*cfg.Sync.RetryBackoff)*time.Second,
-		cfg.Library.OverrideTags,
+		tagAllowlist,
 	)
 
 	// Set library change hooks.

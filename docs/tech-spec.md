@@ -171,7 +171,7 @@ Because chi uses `Handle` (not per-method routing) for the WebDAV paths, all met
 
 ### Virtual Path Filtering
 
-The `library.Filter` types (built in `server.go:buildFilters()` from `library.virtual_paths` config) provide regex-based includes/excludes on directory and file names, optional `min_file_size` / `max_file_size` byte bounds (human-readable strings parsed via `library.ParseFileSize`, 0 = unlimited), plus a `largest_file_only` option. Apply order: directory match → file regex → size bounds → keep largest. Each filter is mounted at a named virtual directory (e.g. `/webdav/movies/`). Filters are compiled from config at server startup and stored in `s.virtualFilters` (slice) and `s.virtualPathMap` (map for O(1) lookup). The `__all__` mount bypasses all filtering.
+The `library.Filter` types (built in `server.go:buildFilters()` from `library.virtual_paths` config) provide regex-based includes/excludes on directory and file names, optional `min_file_size` / `max_file_size` byte bounds (human-readable strings parsed via `library.ParseFileSize`, 0 = unlimited), plus a `largest_file_only` option. Directory match uses `MatchDirectoryForItem`: TorBox force tags `forced{path_name}` force include/exclude by mount name before regex; then file regex → size bounds → keep largest. Each filter is mounted at a named virtual directory (e.g. `/webdav/movies/`). Filters are compiled from config at server startup and stored in `s.virtualFilters` (slice) and `s.virtualPathMap` (map for O(1) lookup). The `__all__` mount bypasses all filtering.
 
 ### OpenAPI Spec
 
@@ -438,7 +438,7 @@ The core request executor:
 
 `SyncWorker` manages the periodic TorBox → SQLite synchronisation loop:
 
-- **`NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, overrideTags)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. `overrideTags` (default ["forcedtv", "forcedmovie", "rename"]) specifies which TorBox dashboard tags participate in filter matching and path overrides. Does not start.
+- **`NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, overrideTags)`** — stores references. `retryAttempts` (default 3) controls how many times each API call is retried on transient failures. `retryBackoff` (default 1s) is the base exponential backoff duration. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. `overrideTags` is the allowlist of TorBox tags stored in `filter_tags`; main passes `library.ExpandOverrideTags` (user `override_tags` default `["rename"]` plus automatic `forced{virtual_path_name}` for each configured path). Does not start.
 - **`Start(ctx)`** — stores `ctx` as `parentCtx`, creates a derived `cancelCtx`, calls `runLoop(ctx)`, closes `loopDone` channel on exit.
 - **`Stop()`** — calls the cancel function on the current loop, waits up to 90 seconds for `loopDone` to close. Safe to call multiple times or before `Start`.
 - **`Restart()`** — calls `Stop()`, creates a new derived context from `parentCtx`, launches `runLoop` in a new goroutine.

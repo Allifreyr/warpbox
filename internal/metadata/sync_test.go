@@ -470,20 +470,36 @@ func TestBuildFileRecordRenameSingleFile(t *testing.T) {
 	}
 }
 
-func TestBuildFileRecordWithForcedMovieTag(t *testing.T) {
+func TestBuildFileRecordWithForcedMoviesTag(t *testing.T) {
 	f := torbox.TorrentFile{
 		ID:        10,
 		S3Path:    "abc123/Some.Movie.S01.2024/movie.mkv",
 		ShortName: "movie.mkv",
 	}
-	overrideTags := map[string]bool{"forcedmovie": true}
-	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"forcedmovie"}, overrideTags, "")
+	overrideTags := map[string]bool{"forcedmovies": true}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"forcedmovies"}, overrideTags, "")
 
-	if rec.FilterTags != "forcedmovie" {
-		t.Errorf("FilterTags = %q, want %q", rec.FilterTags, "forcedmovie")
+	if rec.FilterTags != "forcedmovies" {
+		t.Errorf("FilterTags = %q, want %q", rec.FilterTags, "forcedmovies")
 	}
 	// Virtual path must remain unchanged (derived from S3 path only).
 	if rec.Path != "Some.Movie.S01.2024/movie.mkv" {
 		t.Errorf("Path = %q, want %q (path must not include tags)", rec.Path, "Some.Movie.S01.2024/movie.mkv")
+	}
+}
+
+func TestBuildFileRecord_ForcedAnimeOnlyIfAllowlisted(t *testing.T) {
+	f := torbox.TorrentFile{
+		ID:        10,
+		S3Path:    "abc123/Show/ep.mkv",
+		ShortName: "ep.mkv",
+	}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"forcedanime"}, map[string]bool{"forcedtv": true}, "")
+	if rec.FilterTags != "" {
+		t.Errorf("expected empty FilterTags without allowlist, got %q", rec.FilterTags)
+	}
+	rec = buildFileRecord(1, f, 1, SourceTorrent, "", []string{"forcedanime"}, map[string]bool{"forcedanime": true}, "")
+	if rec.FilterTags != "forcedanime" {
+		t.Errorf("FilterTags = %q, want forcedanime", rec.FilterTags)
 	}
 }

@@ -88,22 +88,52 @@ func (f *Filter) MatchSize(size int64) bool {
 	return true
 }
 
+// MatchDirectoryForItem applies force-tag routing, then normal include/exclude.
+//
+// Force tags follow the virtual path name: tag "forced" + path name (e.g. path
+// "movies" → "forcedmovies"). If the item has this mount's force tag, it is
+// included. If it has any other force tag, it is excluded. Otherwise directory
+// include/exclude run on dir (+ filter_tags for advanced regex tags).
+// The stored virtual path is never modified.
+func (f *Filter) MatchDirectoryForItem(dir, filterTags string) bool {
+	pathName := strings.TrimPrefix(f.Mount, "/")
+	forceTags := ForceTargets(filterTags)
+	if len(forceTags) > 0 {
+		hasMine, hasOther := false, false
+		for _, t := range forceTags {
+			if MatchesMount(t, pathName) {
+				hasMine = true
+			} else {
+				hasOther = true
+			}
+		}
+		if hasMine {
+			return true
+		}
+		if hasOther {
+			return false
+		}
+	}
+
+	matchStr := dir
+	if filterTags != "" {
+		matchStr = dir + " " + filterTags
+	}
+	return f.MatchDirectory(matchStr)
+}
+
 func (f *Filter) Apply(records []metadata.FileRecord) []metadata.FileRecord {
+	// Cache key: directory + tags (force routing depends on both).
 	dirMatchCache := make(map[string]bool, len(records)/2)
 	result := make([]metadata.FileRecord, 0, len(records))
 
 	for _, rec := range records {
 		dir := ExtractDirectory(rec.Path)
-		// Build the match string: directory + filter tags for regex testing only.
-		// The stored path is never modified — this only affects classification.
-		matchStr := dir
-		if rec.FilterTags != "" {
-			matchStr = dir + " " + rec.FilterTags
-		}
-		ok, cached := dirMatchCache[matchStr]
+		cacheKey := dir + "\x00" + rec.FilterTags
+		ok, cached := dirMatchCache[cacheKey]
 		if !cached {
-			ok = f.MatchDirectory(matchStr)
-			dirMatchCache[matchStr] = ok
+			ok = f.MatchDirectoryForItem(dir, rec.FilterTags)
+			dirMatchCache[cacheKey] = ok
 		}
 		if !ok {
 			continue
