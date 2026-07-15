@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Optional per–virtual-path `min_file_size` and `max_file_size` (e.g. `300MB`, `10GB`) to hide files outside a size range under that library view only. Defaults unset (no bounds). Complements `largest_file_only`; size filters run after name/regex filters and before largest-file selection. No bitrate filter (TorBox does not expose duration/bitrate; probing would break zero-API browse).
+
 ### Fixed
 - CDN hang/poll no longer thrash-retries immediately after a TorBox CDN *data* 429 (e.g. rapid `CDN transient error` / `CDN URL recovered` loops on thumbnail or hover-play). Per-item data cooldown, hang-side data retry with backoff, and acquiring the CDN connection semaphore *before* the upstream request reduce concurrent pressure and avoid streaming error bodies.
 

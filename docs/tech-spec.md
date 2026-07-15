@@ -171,7 +171,7 @@ Because chi uses `Handle` (not per-method routing) for the WebDAV paths, all met
 
 ### Virtual Path Filtering
 
-The `library.Filter` types (built in `server.go:buildFilters()` from `library.virtual_paths` config) provide regex-based includes/excludes on directory and file names, plus a `largest_file_only` option. Each filter is mounted at a named virtual directory (e.g. `/webdav/movies/`). Filters are compiled from config at server startup and stored in `s.virtualFilters` (slice) and `s.virtualPathMap` (map for O(1) lookup). The `__all__` mount bypasses all filtering.
+The `library.Filter` types (built in `server.go:buildFilters()` from `library.virtual_paths` config) provide regex-based includes/excludes on directory and file names, optional `min_file_size` / `max_file_size` byte bounds (human-readable strings parsed via `library.ParseFileSize`, 0 = unlimited), plus a `largest_file_only` option. Apply order: directory match → file regex → size bounds → keep largest. Each filter is mounted at a named virtual directory (e.g. `/webdav/movies/`). Filters are compiled from config at server startup and stored in `s.virtualFilters` (slice) and `s.virtualPathMap` (map for O(1) lookup). The `__all__` mount bypasses all filtering.
 
 ### OpenAPI Spec
 
@@ -836,6 +836,8 @@ Each virtual path entry:
 | `directory_include` | string | Must compile as regex |
 | `directory_exclude` | string | Must compile as regex |
 | `file_regex` | string | Must compile as regex |
+| `min_file_size` | string | Optional; `library.ParseFileSize` (e.g. `300MB`); empty = no min |
+| `max_file_size` | string | Optional; same parser; empty = no max; must be ≥ min when both set |
 | `largest_file_only` | bool | — |
 
 ### Pointer-to-Int Pattern

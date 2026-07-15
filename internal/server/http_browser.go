@@ -131,6 +131,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 				if !vf.MatchFile(rel) {
 					continue
 				}
+				if !vf.MatchSize(rec.Size) {
+					continue
+				}
 				filterTotals[i] += rec.Size
 			}
 		}

@@ -158,14 +158,18 @@ credentials.
 ## Virtual Path Tuning
 
 `library.virtual_paths` lets you create filtered views of your TorBox content.
-Each virtual path is a name plus three regex filters and a `largest_file_only` flag.
+Each virtual path is a name plus regex filters, optional size bounds, and a `largest_file_only` flag.
 
 | Field | What it filters on | Example |
 |-------|--------------------|---------|
 | `directory_include` | Torrent-level directory name. If set, only torrents matching this regex are included. | Include season/episode patterns for TV |
 | `directory_exclude` | Torrent-level directory name. Torrents matching this regex are excluded. | Exclude season/episode patterns from movies |
 | `file_regex` | Relative file path inside the torrent. Only matching files appear. | Only show `.mkv`, `.mp4`, `.avi` files |
+| `min_file_size` | Optional minimum file size (e.g. `300MB`). Omitting = no minimum. Binary units (1MB = 1024² bytes). | Hide samples and tiny junk |
+| `max_file_size` | Optional maximum file size (e.g. `10GB`). Omitting = no maximum. | Hide oversized remuxes from a mount |
 | `largest_file_only` | When true, only the largest file in the torrent is shown. Hides extras (sample files, subtitles, etc.) within the filtered view. | Usually want this on for both movies and TV |
+
+Size bounds run **after** name filters and **before** `largest_file_only`. They only affect visibility under that virtual path — stored paths and `/webdav/__all__/` are unchanged. Changing min/max can make items appear or disappear on the next media-server scan (same class of change as editing `file_regex`).
 
 The `__all__` virtual path is always available and shows everything unfiltered.
 
