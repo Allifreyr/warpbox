@@ -90,6 +90,11 @@ type VirtualPathConfig struct {
 	// e.g. "300MB", "10GB"). Empty = no bound. Binary units (1024).
 	MinFileSize string `yaml:"min_file_size"`
 	MaxFileSize string `yaml:"max_file_size"`
+	// Optional regex matched against each path segment. If any segment matches,
+	// the file is excluded (e.g. Extras/, Specials/, Featurettes/). Empty = off.
+	// Prefer anchored patterns like (?i)^(extras|specials)$ so release titles
+	// containing those words are not dropped.
+	PathSegmentExclude string `yaml:"path_segment_exclude"`
 }
 
 // LibraryConfig holds settings for the virtual library feature.
@@ -375,6 +380,11 @@ func validateLibrary(l *LibraryConfig) error {
 		if vp.FileRegex != "" {
 			if _, err := regexp.Compile(vp.FileRegex); err != nil {
 				return fmt.Errorf("library.virtual_paths[%d].file_regex: %w", i, err)
+			}
+		}
+		if vp.PathSegmentExclude != "" {
+			if _, err := regexp.Compile(vp.PathSegmentExclude); err != nil {
+				return fmt.Errorf("library.virtual_paths[%d].path_segment_exclude: %w", i, err)
 			}
 		}
 

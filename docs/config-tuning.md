@@ -167,9 +167,14 @@ Each virtual path is a name plus regex filters, optional size bounds, and a `lar
 | `file_regex` | Relative file path inside the torrent. Only matching files appear. | Only show `.mkv`, `.mp4`, `.avi` files |
 | `min_file_size` | Optional minimum file size (e.g. `300MB`). Omitting = no minimum. Binary units (1MB = 1024² bytes). | Hide samples and tiny junk |
 | `max_file_size` | Optional maximum file size (e.g. `10GB`). Omitting = no maximum. | Hide oversized remuxes from a mount |
+| `path_segment_exclude` | Optional regex matched against **each path segment**. If any segment matches, that file is hidden. | Drop `Extras/`, `Specials/`, `Featurettes/` folders |
 | `largest_file_only` | When true, only the largest file in the torrent is shown. Hides extras (sample files, subtitles, etc.) within the filtered view. | Usually want this on for both movies and TV |
 
-Size bounds run **after** name filters and **before** `largest_file_only`. They only affect visibility under that virtual path — stored paths and `/webdav/__all__/` are unchanged. Changing min/max can make items appear or disappear on the next media-server scan (same class of change as editing `file_regex`).
+Filter order: directory (top-level + force tags) → `file_regex` → **path segments** → size bounds → `largest_file_only`.
+
+**`path_segment_exclude` tip:** Use an **anchored** pattern such as `(?i)^(extras|specials|featurettes|bonus|sample|samples)$` so a folder *named* `Specials` is excluded, but a release title like `… Season 1-11 Specials (1080p …)/Season 10/ep.mkv` still shows season episodes. Empty / omitted = off (no change from older configs).
+
+Size and segment filters only affect visibility under that virtual path — stored paths and `/webdav/__all__/` are unchanged.
 
 The `__all__` virtual path is always available and shows everything unfiltered.
 

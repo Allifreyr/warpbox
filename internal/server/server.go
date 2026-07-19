@@ -232,7 +232,11 @@ func buildFilters(vps []config.VirtualPathConfig) ([]*library.Filter, error) {
 		if err != nil {
 			return nil, fmt.Errorf("building filter for %q: max_file_size: %w", vp.Name, err)
 		}
-		filters = append(filters, f.WithSizeBounds(minSize, maxSize))
+		f.WithSizeBounds(minSize, maxSize)
+		if _, err := f.WithPathSegmentExclude(vp.PathSegmentExclude); err != nil {
+			return nil, fmt.Errorf("building filter for %q: path_segment_exclude: %w", vp.Name, err)
+		}
+		filters = append(filters, f)
 	}
 	return filters, nil
 }

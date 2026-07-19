@@ -1,6 +1,7 @@
 package library
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mainlink0435/warpbox/internal/metadata"
@@ -540,5 +541,59 @@ func TestApplyFilter_SizeThenLargest(t *testing.T) {
 	}
 	if got[0].Size != 2000 {
 		t.Errorf("expected feature (2000) after size filter + largest, got %d", got[0].Size)
+	}
+}
+
+func TestMatchPathSegments(t *testing.T) {
+	f, err := NewFilter("/tv", "", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WithPathSegmentExclude(`(?i)^(extras|specials|featurettes)$`); err != nil {
+		t.Fatal(err)
+	}
+	if !f.MatchPathSegments("Show/Season 1/ep.mkv") {
+		t.Error("season path should keep")
+	}
+	if f.MatchPathSegments("Show/Extras/trailer.mkv") {
+		t.Error("Extras segment should drop")
+	}
+	if f.MatchPathSegments("Show/Specials/S00E01.mkv") {
+		t.Error("Specials segment should drop")
+	}
+	// Top-level release title contains "Specials" but is not a segment named Specials.
+	top := "Robot Chicken (2001) Season 1-11 S01-11 Specials (1080p HMAX)/Season 10/ep.mkv"
+	if !f.MatchPathSegments(top) {
+		t.Error("Specials in top-level title only must not drop season eps")
+	}
+	// Actual Specials subfolder under that pack.
+	if f.MatchPathSegments("Robot Chicken (2001) Season 1-11 S01-11 Specials (1080p HMAX)/Specials/bonus.mkv") {
+		t.Error("Specials folder should drop")
+	}
+}
+
+func TestApplyFilter_PathSegmentExclude(t *testing.T) {
+	f, err := NewFilter("/anime", "", "", `.*\.mkv$`, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WithPathSegmentExclude(`(?i)^(extras|specials|featurettes)$`); err != nil {
+		t.Fatal(err)
+	}
+	records := []metadata.FileRecord{
+		{ItemID: 1, Path: "[Reza] Ghost Stories BD/ep01.mkv", Size: 1000},
+		{ItemID: 1, Path: "[Reza] Ghost Stories BD/Extras/trailer.mkv", Size: 50},
+		{ItemID: 2, Path: "Show/Featurettes/making-of.mkv", Size: 200},
+		{ItemID: 3, Path: "Show/Season 1/ep.mkv", Size: 800},
+	}
+	got := f.Apply(records)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 records, got %d: %+v", len(got), got)
+	}
+	for _, r := range got {
+		if strings.Contains(strings.ToLower(r.Path), "/extras/") ||
+			strings.Contains(strings.ToLower(r.Path), "/featurettes/") {
+			t.Errorf("should not include extras path: %s", r.Path)
+		}
 	}
 }

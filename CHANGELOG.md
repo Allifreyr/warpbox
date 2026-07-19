@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.2-v0.5.2] - 2026-07-19
+
+### Added
+- Optional per–virtual-path `path_segment_exclude` regex to hide files under path segments such as `Extras/`, `Specials/`, or `Featurettes/` without dropping packs whose *title* merely contains those words. Default empty (off). Applied after `file_regex` and before size/`largest_file_only`.
+
+## [v0.7.2-v0.5.1] - 2026-07-17
+
+### Changed
+- CDN hang/poll path maintainability: shared helpers for poll backoff, context-aware sleep, transient status checks, and a single `enterCDNHang` entry used for CDN data 429/5xx and disguised text error bodies. Same cooldown and backoff policy as before (including waiting before requestdl and again before the data request under concurrency). No intentional behavior change for listings, force tags, size filters, or playback.
+- `Filter.WithSizeBounds` for setting per-mount min/max file size after `NewFilter` (same meaning: `0` = no bound).
+- `ExpandOverrideTags` comment corrected (map iteration order is unordered, not “sorted-stable”).
+
 ## [v0.7.1-v0.5.0] - 2026-07-16
 
 ### Added

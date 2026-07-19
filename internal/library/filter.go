@@ -12,7 +12,9 @@ type Filter struct {
 	DirectoryInclude *regexp.Regexp
 	DirectoryExclude *regexp.Regexp
 	FileRegex        *regexp.Regexp
-	LargestFileOnly  bool
+	// PathSegmentExclude matches any path segment; if it matches, the file is dropped.
+	PathSegmentExclude *regexp.Regexp
+	LargestFileOnly    bool
 	// MinSize / MaxSize are byte bounds applied after name filters.
 	// Zero means no bound (unlimited).
 	MinSize int64
@@ -51,6 +53,20 @@ func (f *Filter) WithSizeBounds(min, max int64) *Filter {
 	f.MinSize = min
 	f.MaxSize = max
 	return f
+}
+
+// WithPathSegmentExclude compiles pattern and attaches it for segment matching.
+// Empty pattern is a no-op. Returns an error if pattern is invalid.
+func (f *Filter) WithPathSegmentExclude(pattern string) (*Filter, error) {
+	if pattern == "" {
+		return f, nil
+	}
+	r, err := regexp.Compile(pattern)
+	if err != nil {
+		return f, err
+	}
+	f.PathSegmentExclude = r
+	return f, nil
 }
 
 func ExtractDirectory(path string) string {
@@ -92,6 +108,24 @@ func (f *Filter) MatchSize(size int64) bool {
 	}
 	if f.MaxSize > 0 && size > f.MaxSize {
 		return false
+	}
+	return true
+}
+
+// MatchPathSegments reports whether path should be kept given path_segment_exclude.
+// true = keep. Empty/nil exclude keeps all paths. Any segment matching the
+// regex causes exclusion (e.g. folder named Extras or Specials).
+func (f *Filter) MatchPathSegments(path string) bool {
+	if f.PathSegmentExclude == nil {
+		return true
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" {
+			continue
+		}
+		if f.PathSegmentExclude.MatchString(seg) {
+			return false
+		}
 	}
 	return true
 }
@@ -148,6 +182,10 @@ func (f *Filter) Apply(records []metadata.FileRecord) []metadata.FileRecord {
 		}
 		rel := ExtractRelativePath(rec.Path)
 		if !f.MatchFile(rel) {
+			continue
+		}
+		// Drop files under Extras/Specials/… segments (not top-level title substrings).
+		if !f.MatchPathSegments(rec.Path) {
 			continue
 		}
 		// Size bounds before largest_file_only so samples under min drop first.

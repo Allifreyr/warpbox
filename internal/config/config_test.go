@@ -558,6 +558,47 @@ library:
 	}
 }
 
+func TestLoadLibraryPathSegmentExclude(t *testing.T) {
+	content := []byte(`
+torbox:
+  api_key: "test-key"
+library:
+  virtual_paths:
+    - name: "tv"
+      path_segment_exclude: "(?i)^(extras|specials)$"
+`)
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Library.VirtualPaths[0].PathSegmentExclude == "" {
+		t.Error("expected path_segment_exclude to be loaded")
+	}
+}
+
+func TestLoadLibraryInvalidPathSegmentExclude(t *testing.T) {
+	content := []byte(`
+torbox:
+  api_key: "test-key"
+library:
+  virtual_paths:
+    - name: "tv"
+      path_segment_exclude: "[invalid"
+`)
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(tmp)
+	if err == nil {
+		t.Fatal("expected error for invalid path_segment_exclude")
+	}
+}
+
 func TestLoadLibraryDuplicateMount(t *testing.T) {
 	content := []byte(`
 torbox:
