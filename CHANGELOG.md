@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [v0.7.2-v0.5.2] - 2026-07-19
+## [v0.7.3-v0.6.0] - 2026-07-19
 
 ### Added
 - Optional per–virtual-path `path_segment_exclude` regex to hide files under path segments such as `Extras/`, `Specials/`, or `Featurettes/` without dropping packs whose *title* merely contains those words. Default empty (off). Applied after `file_regex` and before size/`largest_file_only`.
+- Mock CDN hang/poll integration tests (adapted from upstream): retries on data 429 and disguised text bodies, client disconnect, stream→hang routing, and multi-attempt hang recovery with shortened poll/cooldown for tests.
+
+### Changed
+- `ParseFileSize` overflow check uses `math.MaxInt64` (aligned with upstream clarity; same behavior).
+- `cdnPollInterval` is a package `var` so tests can shorten hang/cooldown without changing production defaults.
 
 ## [v0.7.2-v0.5.1] - 2026-07-17
 

@@ -2,11 +2,112 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/mainlink0435/warpbox/internal/metadata"
+	"github.com/mainlink0435/warpbox/internal/throttle"
+	"github.com/mainlink0435/warpbox/internal/torbox"
 )
+
+// ---------------------------------------------------------------------------
+// Mock CDN helpers for hang/poll retry tests (adapted from upstream d2497af;
+// works with per-item data cooldown by shortening cdnPollInterval).
+// ---------------------------------------------------------------------------
+
+// cdnResponse defines a single response the mock CDN server should return.
+type cdnResponse struct {
+	status      int
+	body        string
+	contentType string
+}
+
+// newMockCDNServer returns an httptest.Server that cycles through the given
+// responses on each successive request. Used to simulate transient CDN
+// data errors (429, 5xx, disguised text bodies) followed by success.
+func newMockCDNServer(t *testing.T, responses []cdnResponse) *httptest.Server {
+	t.Helper()
+	var mu sync.Mutex
+	idx := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if idx >= len(responses) {
+			idx = 0
+		}
+		resp := responses[idx]
+		idx++
+		mu.Unlock()
+		if resp.contentType != "" {
+			w.Header().Set("Content-Type", resp.contentType)
+		}
+		w.WriteHeader(resp.status)
+		io.WriteString(w, resp.body)
+	}))
+}
+
+// newMockTorBoxForCDN returns an httptest.Server that responds to TorBox API
+// requestdl calls with a CDN URL pointing to the given base URL.
+func newMockTorBoxForCDN(t *testing.T, cdnBaseURL string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"success":true,"data":"%s/file"}`, cdnBaseURL)
+	}))
+}
+
+// newTestCDNHangEnv wires a full environment for CDN hang/poll tests.
+// Shortens cdnPollInterval (also used as data cooldown) so tests stay fast.
+func newTestCDNHangEnv(t *testing.T, cdnResponses []cdnResponse) (*Server, *httptest.ResponseRecorder, func()) {
+	t.Helper()
+
+	oldPoll := cdnPollInterval
+	cdnPollInterval = 10 * time.Millisecond
+
+	mockCDN := newMockCDNServer(t, cdnResponses)
+	mockTorBox := newMockTorBoxForCDN(t, mockCDN.URL)
+
+	client := torbox.NewClient("test-key")
+	client.SetBaseURL(mockTorBox.URL)
+
+	store, err := metadata.Open(":memory:")
+	if err != nil {
+		mockCDN.Close()
+		mockTorBox.Close()
+		t.Fatalf("opening in-memory store: %v", err)
+	}
+	if err := store.UpsertFile(metadata.FileRecord{
+		ItemID: 1, FileID: 10, Source: metadata.SourceTorrent,
+		Name: "test.mkv", Path: "Test/test.mkv", Size: 5000, MimeType: "video/x-matroska",
+	}); err != nil {
+		store.Close()
+		mockCDN.Close()
+		mockTorBox.Close()
+		t.Fatalf("upserting test file: %v", err)
+	}
+
+	queue := throttle.NewQueue(600)
+	qCtx, qCancel := context.WithCancel(context.Background())
+	queue.Start(qCtx)
+
+	srv := New(Config{Version: "test"}, store, client, queue)
+	w := httptest.NewRecorder()
+
+	cleanup := func() {
+		qCancel()
+		srv.StopCleanup()
+		store.Close()
+		mockCDN.Close()
+		mockTorBox.Close()
+		cdnPollInterval = oldPoll
+	}
+
+	return srv, w, cleanup
+}
 
 func TestParseRangeFull(t *testing.T) {
 	r, err := parseRange("bytes=0-499", 1000)
@@ -268,5 +369,131 @@ func TestSweepCDNDataCooldown(t *testing.T) {
 	}
 	if _, ok := s.cdnDataCooldown[2]; !ok {
 		t.Error("active cooldown should remain")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CDN hang/poll retry tests (from upstream; compatible with data cooldown)
+// ---------------------------------------------------------------------------
+
+// TestHandleGetCDNHang_RetriesOnData429 verifies streamFileContent routes a
+// CDN 429 into hang/poll, which retries and streams real data (not the 429 body).
+func TestHandleGetCDNHang_RetriesOnData429(t *testing.T) {
+	srv, w, cleanup := newTestCDNHangEnv(t, []cdnResponse{
+		{status: http.StatusTooManyRequests, body: "rate limited"},
+		{status: http.StatusOK, body: "real binary data", contentType: "application/octet-stream"},
+	})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/webdav/Test/test.mkv", nil)
+	req.Header.Set("Range", "bytes=0-499")
+	srv.handleGet(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if string(body) != "real binary data" {
+		t.Errorf("expected body %q, got %q", "real binary data", string(body))
+	}
+}
+
+// TestHandleGetCDNHang_RetriesOnDisguisedTextBody verifies a 200 text/html CDN
+// response is not streamed as file data; hang retries until real media arrives.
+func TestHandleGetCDNHang_RetriesOnDisguisedTextBody(t *testing.T) {
+	srv, w, cleanup := newTestCDNHangEnv(t, []cdnResponse{
+		{status: http.StatusOK, body: "too many requests", contentType: "text/html"},
+		{status: http.StatusOK, body: "real binary data", contentType: "video/x-matroska"},
+	})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/webdav/Test/test.mkv", nil)
+	req.Header.Set("Range", "bytes=0-499")
+	srv.handleGet(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if string(body) != "real binary data" {
+		t.Errorf("expected body %q, got %q", "real binary data", string(body))
+	}
+}
+
+// TestHandleGetCDNHang_ClientDisconnectExitsCleanly verifies hang exits when
+// the client context is cancelled.
+func TestHandleGetCDNHang_ClientDisconnectExitsCleanly(t *testing.T) {
+	srv, w, cleanup := newTestCDNHangEnv(t, []cdnResponse{
+		{status: http.StatusTooManyRequests, body: "keep waiting"},
+		{status: http.StatusTooManyRequests, body: "still busy"},
+		{status: http.StatusTooManyRequests, body: "not yet"},
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/webdav/Test/test.mkv", nil).WithContext(ctx)
+	req.Header.Set("Range", "bytes=0-499")
+
+	done := make(chan struct{})
+	go func() {
+		srv.handleGet(w, req)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleGet did not exit after context cancellation")
+	}
+}
+
+// TestStreamFileContent_Routes429ToHang is an integration check: initial proxy
+// 429 → hang/poll → valid body.
+func TestStreamFileContent_Routes429ToHang(t *testing.T) {
+	srv, w, cleanup := newTestCDNHangEnv(t, []cdnResponse{
+		{status: http.StatusTooManyRequests, body: "rate limited"},
+		{status: http.StatusOK, body: "real binary data", contentType: "application/octet-stream"},
+	})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/webdav/Test/test.mkv", nil)
+	req.Header.Set("Range", "bytes=0-499")
+	srv.handleGet(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if string(body) != "real binary data" {
+		t.Errorf("expected body %q, got %q", "real binary data", string(body))
+	}
+}
+
+// TestHandleGetCDNHang_RetriesTwiceInsideHang verifies hang itself retries when
+// the first post-recovery data attempt is still 429 (cooldown shortened via env).
+func TestHandleGetCDNHang_RetriesTwiceInsideHang(t *testing.T) {
+	srv, w, cleanup := newTestCDNHangEnv(t, []cdnResponse{
+		// streamFileContent
+		{status: http.StatusTooManyRequests, body: "rate limited"},
+		// hang attempt 1
+		{status: http.StatusTooManyRequests, body: "still limited"},
+		// hang attempt 2
+		{status: http.StatusOK, body: "real binary data", contentType: "application/octet-stream"},
+	})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/webdav/Test/test.mkv", nil)
+	req.Header.Set("Range", "bytes=0-499")
+	srv.handleGet(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if string(body) != "real binary data" {
+		t.Errorf("expected body %q, got %q", "real binary data", string(body))
 	}
 }

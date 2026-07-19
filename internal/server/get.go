@@ -619,7 +619,8 @@ func (s *Server) tryCDNFallback(path string) (string, error) {
 // cdnPollInterval is how long to wait between CDN recovery attempts when
 // the CDN is unavailable and we are hanging the connection open. Also used
 // as the default per-item data cooldown after a CDN data 429.
-const cdnPollInterval = 15 * time.Second
+// Variable (not const) so tests can shorten the interval.
+var cdnPollInterval = 15 * time.Second
 
 const maxCDNPollInterval = 5 * time.Minute
 
