@@ -45,6 +45,14 @@ func NewFilter(mount, dirInclude, dirExclude, fileRegex string, largestFileOnly 
 	return f, nil
 }
 
+// WithSizeBounds sets min/max file size in bytes (0 = no bound) and returns f
+// for chaining after NewFilter.
+func (f *Filter) WithSizeBounds(min, max int64) *Filter {
+	f.MinSize = min
+	f.MaxSize = max
+	return f
+}
+
 func ExtractDirectory(path string) string {
 	if idx := strings.IndexByte(path, '/'); idx >= 0 {
 		return path[:idx]

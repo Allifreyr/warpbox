@@ -158,6 +158,27 @@ func TestCDNSemaphoreAcquireRelease(t *testing.T) {
 	}
 }
 
+func TestDoublePollInterval(t *testing.T) {
+	if got := doublePollInterval(15 * time.Second); got != 30*time.Second {
+		t.Errorf("double 15s = %v, want 30s", got)
+	}
+	if got := doublePollInterval(maxCDNPollInterval); got != maxCDNPollInterval {
+		t.Errorf("capped at max: got %v", got)
+	}
+	if got := doublePollInterval(3 * time.Minute); got != maxCDNPollInterval {
+		t.Errorf("3m*2 should cap at max: got %v", got)
+	}
+}
+
+func TestIsCDNTransientStatus(t *testing.T) {
+	if !isCDNTransientStatus(429) || !isCDNTransientStatus(503) {
+		t.Error("429/5xx should be transient")
+	}
+	if isCDNTransientStatus(200) || isCDNTransientStatus(404) || isCDNTransientStatus(403) {
+		t.Error("2xx/403/404 should not be transient")
+	}
+}
+
 func TestIsCDNDisguisedErrorBody(t *testing.T) {
 	cases := []struct {
 		ct   string

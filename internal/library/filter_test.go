@@ -472,6 +472,17 @@ func TestApplyFilter_ForceTagAnimeMount(t *testing.T) {
 	}
 }
 
+func TestWithSizeBounds(t *testing.T) {
+	f, err := NewFilter("/m", "", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WithSizeBounds(100, 1000)
+	if f.MinSize != 100 || f.MaxSize != 1000 {
+		t.Errorf("WithSizeBounds: got min=%d max=%d", f.MinSize, f.MaxSize)
+	}
+}
+
 func TestMatchSize(t *testing.T) {
 	f := &Filter{MinSize: 100, MaxSize: 1000}
 	if !f.MatchSize(100) || !f.MatchSize(500) || !f.MatchSize(1000) {

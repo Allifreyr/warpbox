@@ -228,23 +228,14 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 
 		// 429 (rate limit) and 5xx (server error) from the CDN are transient.
 		// Instead of returning 502 (which rclone counts as an error toward
-		// maxErrorCount=10), route into hang/poll mode. Invalidate the cached
-		// URL and mark a per-item data cooldown so hang does not immediately
-		// re-hammer the CDN after a successful requestdl (D-015c).
-		if proxyResp.StatusCode == http.StatusTooManyRequests ||
-			proxyResp.StatusCode >= 500 {
+		// maxErrorCount=10), route into hang/poll mode.
+		if isCDNTransientStatus(proxyResp.StatusCode) {
+			status := proxyResp.StatusCode
 			proxyResp.Body.Close()
 			s.ReleaseCDNConn()
-			slog.Warn("GET: CDN transient error, entering hang/poll mode",
-				"path", file.Path,
-				"status", proxyResp.StatusCode,
-				"source", file.Source,
-				"item_id", file.ItemID,
-				"file_id", file.FileID,
+			s.enterCDNHang(w, r, file, "GET: CDN transient error, entering hang/poll mode",
+				"status", status,
 			)
-			s.markCDNDataCooldown(file.ItemID, cdnPollInterval)
-			s.invalidateCDNURLCache(file)
-			s.handleGetCDNHang(w, r, file)
 			return
 		}
 
@@ -292,15 +283,14 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		// Real CDN media is binary; a text/html/json content-type is an error body.
 		if isCDNDisguisedErrorBody(proxyResp.Header.Get("Content-Type")) {
 			ct := proxyResp.Header.Get("Content-Type")
+			status := proxyResp.StatusCode
 			proxyResp.Body.Close()
 			s.ReleaseCDNConn()
-			slog.Warn("GET: CDN returned a text/error body on a 2xx data response (disguised rate-limit/error) — not streaming, entering hang/poll",
-				"path", file.Path, "content_type", ct, "status", proxyResp.StatusCode,
-				"source", file.Source, "item_id", file.ItemID, "file_id", file.FileID,
+			s.enterCDNHang(w, r, file,
+				"GET: CDN returned a text/error body on a 2xx data response (disguised rate-limit/error) — not streaming, entering hang/poll",
+				"content_type", ct,
+				"status", status,
 			)
-			s.markCDNDataCooldown(file.ItemID, cdnPollInterval)
-			s.invalidateCDNURLCache(file)
-			s.handleGetCDNHang(w, r, file)
 			return
 		}
 
@@ -352,6 +342,12 @@ func isCDNDisguisedErrorBody(contentType string) bool {
 	return strings.HasPrefix(ct, "text/") || strings.Contains(ct, "html") || strings.Contains(ct, "json")
 }
 
+// isCDNTransientStatus reports CDN HTTP statuses that should enter hang/poll
+// rather than fail the client immediately.
+func isCDNTransientStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
+}
+
 // invalidateCDNURLCache clears any cached CDN URL for the file so hang/poll
 // re-fetches via requestdl.
 func (s *Server) invalidateCDNURLCache(file *metadata.FileRecord) {
@@ -362,6 +358,24 @@ func (s *Server) invalidateCDNURLCache(file *metadata.FileRecord) {
 	if err := s.store.SetCDNURL(file.ID, "", expiry); err != nil {
 		slog.Error("GET: failed to invalidate CDN URL cache", "path", file.Path, "error", err)
 	}
+}
+
+// enterCDNHang marks per-item data cooldown, invalidates the CDN URL cache,
+// and enters hang/poll. Caller must already have released the CDN semaphore
+// and closed any proxy response body.
+//
+// attrs are alternating key/value pairs for slog (e.g. "status", 429).
+func (s *Server) enterCDNHang(w http.ResponseWriter, r *http.Request, file *metadata.FileRecord, msg string, attrs ...any) {
+	base := []any{
+		"path", file.Path,
+		"source", file.Source,
+		"item_id", file.ItemID,
+		"file_id", file.FileID,
+	}
+	slog.Warn(msg, append(base, attrs...)...)
+	s.markCDNDataCooldown(file.ItemID, cdnPollInterval)
+	s.invalidateCDNURLCache(file)
+	s.handleGetCDNHang(w, r, file)
 }
 
 // ---------------------------------------------------------------------------
@@ -609,6 +623,25 @@ const cdnPollInterval = 15 * time.Second
 
 const maxCDNPollInterval = 5 * time.Minute
 
+// doublePollInterval doubles d and caps at maxCDNPollInterval.
+func doublePollInterval(d time.Duration) time.Duration {
+	d *= 2
+	if d > maxCDNPollInterval {
+		return maxCDNPollInterval
+	}
+	return d
+}
+
+// sleepOrDone waits for d or until ctx is cancelled.
+func sleepOrDone(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
 // handleGetCDNHang is entered when the CDN URL cannot be fetched, or when CDN
 // *data* returns a transient error, and we want to avoid returning an error
 // (which rclone counts toward maxErrorCount=10).
@@ -666,7 +699,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 	proxyClient := &http.Client{Timeout: 30 * time.Second}
 
 	for {
-		// Drain window: do not re-hit CDN data until cooldown expires.
+		// Wait before fetch: shared per-item data cooldown (drain window).
 		if err := s.waitCDNDataCooldown(r.Context(), file.ItemID); err != nil {
 			slog.Debug("client disconnected while waiting for CDN data cooldown",
 				"path", file.Path,
@@ -682,10 +715,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			// Exponential backoff when rate-limited by TorBox's per-item
 			// requestdl limit. Keep doubling until max cap.
 			if strings.Contains(fetchErr.Error(), "unexpected status 429") {
-				pollInterval *= 2
-				if pollInterval > maxCDNPollInterval {
-					pollInterval = maxCDNPollInterval
-				}
+				pollInterval = doublePollInterval(pollInterval)
 				slog.Warn("GET (hang): rate-limited on requestdl, increasing poll backoff",
 					"path", file.Path,
 					"source", file.Source,
@@ -699,11 +729,9 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 					"path", file.Path, "error", fetchErr, "next_poll", pollInterval,
 				)
 			}
-			select {
-			case <-r.Context().Done():
+			if err := sleepOrDone(r.Context(), pollInterval); err != nil {
 				slog.Debug("client disconnected while waiting for CDN", "path", file.Path)
 				return
-			case <-time.After(pollInterval):
 			}
 			continue
 		}
@@ -723,7 +751,8 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			"file_id", file.FileID,
 		)
 
-		// Respect cooldown again in case another request extended it.
+		// Wait again before data Do so concurrent hangers that extended
+		// cooldown during requestdl are still respected.
 		if err := s.waitCDNDataCooldown(r.Context(), file.ItemID); err != nil {
 			slog.Debug("client disconnected while waiting for CDN data cooldown", "path", file.Path)
 			return
@@ -744,16 +773,14 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			slog.Warn("GET (hang): CDN proxy request failed, will retry",
 				"path", file.Path, "error", err, "next_poll", pollInterval,
 			)
-			select {
-			case <-r.Context().Done():
+			if err := sleepOrDone(r.Context(), pollInterval); err != nil {
 				return
-			case <-time.After(pollInterval):
 			}
 			continue
 		}
 
 		// Transient CDN data failure — do not stream error body; cool down and retry.
-		if proxyResp.StatusCode == http.StatusTooManyRequests || proxyResp.StatusCode >= 500 ||
+		if isCDNTransientStatus(proxyResp.StatusCode) ||
 			isCDNDisguisedErrorBody(proxyResp.Header.Get("Content-Type")) {
 			status := proxyResp.StatusCode
 			ct := proxyResp.Header.Get("Content-Type")
@@ -761,10 +788,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			s.ReleaseCDNConn()
 
 			s.markCDNDataCooldown(file.ItemID, pollInterval)
-			pollInterval *= 2
-			if pollInterval > maxCDNPollInterval {
-				pollInterval = maxCDNPollInterval
-			}
+			pollInterval = doublePollInterval(pollInterval)
 			slog.Warn("GET (hang): CDN data still unavailable, backing off",
 				"path", file.Path,
 				"status", status,
@@ -775,10 +799,8 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 				"next_poll", pollInterval,
 			)
 			s.invalidateCDNURLCache(file)
-			select {
-			case <-r.Context().Done():
+			if err := sleepOrDone(r.Context(), pollInterval); err != nil {
 				return
-			case <-time.After(pollInterval):
 			}
 			continue
 		}

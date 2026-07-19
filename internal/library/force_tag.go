@@ -73,8 +73,9 @@ func BuildTagAllowlist(overrideTags, pathNames []string) map[string]bool {
 	return m
 }
 
-// ExpandOverrideTags returns a sorted-stable slice of allowlisted tags for
-// callers that still pass []string into the sync worker.
+// ExpandOverrideTags returns an unordered slice of allowlisted tags for
+// callers that still pass []string into the sync worker. Map iteration
+// order is not guaranteed; callers must not rely on tag order.
 func ExpandOverrideTags(overrideTags, pathNames []string) []string {
 	m := BuildTagAllowlist(overrideTags, pathNames)
 	out := make([]string, 0, len(m))
