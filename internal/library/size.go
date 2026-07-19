@@ -2,6 +2,7 @@ package library
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -19,7 +20,7 @@ import (
 //	1TB, 1T      → 1 * 1024^4
 //	1.5GB        → fractional values allowed
 //
-// Units use binary (1024) multipliers, matching typical media tooling.
+// Units use binary (1024) multipliers.
 func ParseFileSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -68,7 +69,7 @@ func ParseFileSize(s string) (int64, error) {
 	}
 
 	bytes := n * mult
-	if bytes > float64(^uint64(0)>>1) { // exceed max int64
+	if bytes > math.MaxInt64 {
 		return 0, fmt.Errorf("invalid file size %q: value too large", s)
 	}
 	return int64(bytes), nil
