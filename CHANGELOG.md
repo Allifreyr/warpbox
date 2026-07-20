@@ -186,7 +186,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.1-v0.5.0...HEAD
+[Unreleased]: /compare/v0.7.3-v0.6.0...HEAD
+[v0.7.3-v0.6.0]: /compare/v0.7.2-v0.5.1...v0.7.1-v0.6.0
+[v0.7.2-v0.5.1]: /compare/v0.7.1-v0.5.0...v0.7.2-v0.5.1
 [v0.7.1-v0.5.0]: /compare/v0.7.1-v0.4.0...v0.7.1-v0.5.0
 [v0.7.1-v0.4.0]: /compare/v0.7.1-v0.3.2...v0.7.1-v0.4.0
 [v0.7.1-v0.3.2]: /compare/v0.7.1-v0.3.1...v0.7.1-v0.3.2
