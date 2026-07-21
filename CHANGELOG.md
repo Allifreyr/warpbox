@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Maintainability: shared `upsertItemFiles` for full sync and single-item fetch (one file policy). Split GET CDN fetch/classification (`get_cdn.go`) and hang/poll (`get_hang.go`) out of `get.go` (~500 lines). Stream and hang use `classifyCDNDataResponse` for CDN data outcomes. No intentional product behavior change.
+
 ## [v0.7.4-v0.7.0] - 2026-07-21
 
 ### Added

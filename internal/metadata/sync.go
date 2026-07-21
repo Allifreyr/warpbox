@@ -252,20 +252,6 @@ func (w *SyncWorker) SyncItem(ctx context.Context, source FileSource, itemID int
 	}
 
 	result.ItemName = item.Name
-	// Same readiness gate as full sync.
-	if item.DownloadState != "cached" && !item.DownloadPresent {
-		result.Ready = false
-		result.Message = fmt.Sprintf("item %d (%q) is not ready yet (state=%s, download_present=%v)",
-			itemID, item.Name, item.DownloadState, item.DownloadPresent)
-		slog.Info("sync item: not ready", "source", source, "id", itemID, "state", item.DownloadState)
-		return result, nil
-	}
-	if len(item.Files) == 0 {
-		result.Ready = false
-		result.Message = fmt.Sprintf("item %d (%q) has no files yet", itemID, item.Name)
-		slog.Info("sync item: no files", "source", source, "id", itemID)
-		return result, nil
-	}
 
 	// Reuse current full-sync tag; never increment and never prune.
 	syncTag, err := w.store.GetCurrentSyncTag()
@@ -273,23 +259,14 @@ func (w *SyncWorker) SyncItem(ctx context.Context, source FileSource, itemID int
 		return result, fmt.Errorf("reading current sync tag: %w", err)
 	}
 
-	var count int
-	for _, f := range item.Files {
-		if !usableTorBoxFile(f) {
-			slog.Debug("sync item: skipping unusable file", "item_id", itemID, "file_id", f.ID, "name", f.ShortName)
-			continue
-		}
-		rec := buildFileRecord(item.ID, f, syncTag, source, item.CreatedAt, item.Tags, w.overrideTags, item.Name)
-		if err := w.store.UpsertFile(rec); err != nil {
-			slog.Error("sync item: upsert failed",
-				"file_id", f.ID, "path", rec.Path, "error", err)
-			continue
-		}
-		count++
-	}
+	count, ready, msg := w.upsertItemFiles(*item, source, syncTag)
 	result.FilesUpserted = count
-	result.Ready = true
-	result.Message = fmt.Sprintf("synced item %d (%q): %d file(s)", itemID, item.Name, count)
+	result.Ready = ready
+	result.Message = msg
+	if !ready {
+		slog.Info("sync item: not ready", "source", source, "id", itemID, "state", item.DownloadState, "msg", msg)
+		return result, nil
+	}
 
 	slog.Info("sync item complete",
 		"source", source, "id", itemID, "name", item.Name, "files", count, "sync_tag", syncTag)
@@ -506,61 +483,21 @@ func (w *SyncWorker) syncOnceLocked(ctx context.Context) {
 		return
 	}
 
-	// Flatten torrent items into file records with SourceTorrent.
+	// Flatten torrent + usenet items into file records (shared upsert policy).
 	var count int
 	for _, t := range torRes.torrents {
-		if t.DownloadState != "cached" && !t.DownloadPresent {
-			continue
-		}
-		if len(t.Files) == 0 {
+		n, ready, _ := w.upsertItemFiles(t, SourceTorrent, syncTag)
+		if !ready && len(t.Files) == 0 {
 			slog.Debug("metadata sync: skipping torrent with no files", "id", t.ID, "name", t.Name)
-			continue
 		}
-
-		for _, f := range t.Files {
-			if !usableTorBoxFile(f) {
-				slog.Debug("metadata sync: skipping unusable file", "item_id", t.ID, "file_id", f.ID, "name", f.ShortName)
-				continue
-			}
-			rec := buildFileRecord(t.ID, f, syncTag, SourceTorrent, t.CreatedAt, t.Tags, w.overrideTags, t.Name)
-			if err := w.store.UpsertFile(rec); err != nil {
-				slog.Error("metadata sync: upsert failed",
-					"file_id", f.ID,
-					"path", rec.Path,
-					"error", err,
-				)
-				continue
-			}
-			count++
-		}
+		count += n
 	}
-
-	// Flatten usenet items into file records with SourceUsenet.
 	for _, u := range usenetRes.usenet {
-		if u.DownloadState != "cached" && !u.DownloadPresent {
-			continue
-		}
-		if len(u.Files) == 0 {
+		n, ready, _ := w.upsertItemFiles(u, SourceUsenet, syncTag)
+		if !ready && len(u.Files) == 0 {
 			slog.Debug("metadata sync: skipping usenet item with no files", "id", u.ID, "name", u.Name)
-			continue
 		}
-
-		for _, f := range u.Files {
-			if !usableTorBoxFile(f) {
-				slog.Debug("metadata sync: skipping unusable file", "item_id", u.ID, "file_id", f.ID, "name", f.ShortName)
-				continue
-			}
-			rec := buildFileRecord(u.ID, f, syncTag, SourceUsenet, u.CreatedAt, u.Tags, w.overrideTags, u.Name)
-			if err := w.store.UpsertFile(rec); err != nil {
-				slog.Error("metadata sync: upsert failed",
-					"file_id", f.ID,
-					"path", rec.Path,
-					"error", err,
-				)
-				continue
-			}
-			count++
-		}
+		count += n
 	}
 
 	// Track sync status.
@@ -618,6 +555,35 @@ func (w *SyncWorker) syncOnceLocked(ctx context.Context) {
 // produce endless CDN 404 hang loops (e.g. junk single-file "output.jpg").
 func usableTorBoxFile(f torbox.TorrentFile) bool {
 	return f.ID > 0
+}
+
+// upsertItemFiles stores ready, usable files for one TorBox item.
+// Does not prune and does not advance the global sync tag.
+// Shared by full sync and SyncItem so file policy lives in one place.
+func (w *SyncWorker) upsertItemFiles(item torbox.Torrent, source FileSource, syncTag int64) (count int, ready bool, msg string) {
+	if item.DownloadState != "cached" && !item.DownloadPresent {
+		return 0, false, fmt.Sprintf("item %d (%q) is not ready yet (state=%s, download_present=%v)",
+			item.ID, item.Name, item.DownloadState, item.DownloadPresent)
+	}
+	if len(item.Files) == 0 {
+		return 0, false, fmt.Sprintf("item %d (%q) has no files yet", item.ID, item.Name)
+	}
+
+	for _, f := range item.Files {
+		if !usableTorBoxFile(f) {
+			slog.Debug("metadata sync: skipping unusable file",
+				"item_id", item.ID, "file_id", f.ID, "name", f.ShortName)
+			continue
+		}
+		rec := buildFileRecord(item.ID, f, syncTag, source, item.CreatedAt, item.Tags, w.overrideTags, item.Name)
+		if err := w.store.UpsertFile(rec); err != nil {
+			slog.Error("metadata sync: upsert failed",
+				"file_id", f.ID, "path", rec.Path, "error", err)
+			continue
+		}
+		count++
+	}
+	return count, true, fmt.Sprintf("synced item %d (%q): %d file(s)", item.ID, item.Name, count)
 }
 
 // buildFileRecord creates a FileRecord from a TorBox item and file.
