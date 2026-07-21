@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Docker images: canonical (`vX.Y.Z`) and `latest` tags now use a multi-arch manifest (linux/amd64 + linux/arm64) via `docker buildx imagetools create`, instead of retagging only the amd64 image (ported from upstream v0.7.4).
+
+### Changed
+- Docker Compose / README Quick Start: mount a named `warpbox_data` volume at `/data` (config + SQLite) instead of a host bind of only `config.yml`. Persists the metadata DB across container recreation and allows first-run config generation. Documented `docker exec` edit path and optional host `./data:/data` bind. (aligned with upstream)
+
 ## [v0.7.3-v0.6.0] - 2026-07-19
 
 ### Added

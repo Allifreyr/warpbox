@@ -5,7 +5,10 @@ services:
     ports:
       - "1412:1412"
     volumes:
-      - ./config.yml:/data/config.yml:ro
+      # Named volume for /data (config.yml + warpbox.db). Prefer this over a
+      # host bind of only config.yml so the SQLite cache survives container
+      # recreation and first-run can write the generated config template.
+      - warpbox_data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:1412/healthz"]
@@ -65,4 +68,5 @@ services:
       --log-level NOTICE
 
 volumes:
+  warpbox_data:
   rclone_cache:

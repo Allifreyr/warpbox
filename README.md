@@ -20,7 +20,7 @@ services:
     ports:
       - "1412:1412"
     volumes:
-      - ./config.yml:/data/config.yml
+      - warpbox_data:/data
     restart: unless-stopped
 
   rclone:
@@ -74,6 +74,7 @@ services:
       --log-level NOTICE
 
 volumes:
+  warpbox_data:
   rclone_cache:
 ```
 
@@ -85,6 +86,15 @@ Warpbox auto-generates `config.yml` from the template on first start. Change
 ```
 docker compose restart warpbox
 ```
+
+> **Edit the config:** Since it lives inside a Docker volume, use:
+> ```
+> docker exec -it warpbox vi /data/config.yml
+> ```
+> Or view it: `docker exec warpbox cat /data/config.yml`
+>
+> Prefer editing on the host? Bind a directory instead of the named volume, e.g.
+> `./data:/data`, and put `config.yml` (and the DB) under that folder.
 
 ### Bare mount (without Docker)
 
