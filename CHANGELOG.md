@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Per–virtual-path `sidecar_extensions` (e.g. `srt`, `ass`): after primary selection (including `largest_file_only`), keep companion files that match a kept primary’s basename stem (`Movie.en.srt`, `Movie.forced.ass`). Empty = off (default). Not required in `file_regex`; `min_file_size` / `max_file_size` apply to primaries only when this list is set. Adding audio later is config-only (e.g. `mka`).
+
 ### Changed
 - Maintainability: shared `upsertItemFiles` for full sync and single-item fetch (one file policy). Split GET CDN fetch/classification (`get_cdn.go`) and hang/poll (`get_hang.go`) out of `get.go` (~500 lines). Stream and hang use `classifyCDNDataResponse` for CDN data outcomes. No intentional product behavior change.
 

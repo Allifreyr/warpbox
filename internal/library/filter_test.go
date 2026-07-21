@@ -308,6 +308,145 @@ func TestApplyFilter_LargestFileOnly(t *testing.T) {
 	}
 }
 
+func TestNormalizeSidecarExtensions(t *testing.T) {
+	got := NormalizeSidecarExtensions([]string{".SRT", " ass ", "", ".", "srt"})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 unique exts, got %d: %v", len(got), got)
+	}
+	if _, ok := got["srt"]; !ok {
+		t.Error("missing srt")
+	}
+	if _, ok := got["ass"]; !ok {
+		t.Error("missing ass")
+	}
+	if NormalizeSidecarExtensions(nil) != nil {
+		t.Error("nil input should yield nil map")
+	}
+}
+
+func TestPrimaryStem(t *testing.T) {
+	if got := PrimaryStem("Movie/Show.S01E01.mkv"); got != "Show.S01E01" {
+		t.Errorf("got %q", got)
+	}
+	if got := PrimaryStem("file.MP4"); got != "file" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestSidecarMatchesPrimary(t *testing.T) {
+	exts := NormalizeSidecarExtensions([]string{"srt", "ass"})
+	cases := []struct {
+		sub, vid string
+		want     bool
+	}{
+		{"Movie/Show.S01E01.srt", "Movie/Show.S01E01.mkv", true},
+		{"Movie/Show.S01E01.en.srt", "Movie/Show.S01E01.mkv", true},
+		{"Movie/Show.S01E01.eng.forced.ass", "Movie/Show.S01E01.mkv", true},
+		{"Movie/Show.S01E01.ASS", "Movie/Show.S01E01.mkv", true},
+		{"Movie/other.srt", "Movie/Show.S01E01.mkv", false},
+		{"Movie/Show.S01E02.srt", "Movie/Show.S01E01.mkv", false},
+	}
+	for _, tc := range cases {
+		if got := SidecarMatchesPrimary(tc.sub, tc.vid, exts); got != tc.want {
+			t.Errorf("SidecarMatchesPrimary(%q,%q)=%v want %v", tc.sub, tc.vid, got, tc.want)
+		}
+	}
+}
+
+func TestApplyFilter_LargestWithSidecars(t *testing.T) {
+	f, err := NewFilter("/movies", "", "", `.*\.(mkv|mp4)$`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WithSidecarExtensions([]string{"srt", "ass"})
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/Movie.2020.mkv", Size: 5_000_000_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/sample.mkv", Size: 20_000_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/Movie.2020.en.srt", Size: 50_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/Movie.2020.forced.ass", Size: 40_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/unrelated.srt", Size: 10_000},
+	}
+	got := f.Apply(records)
+	paths := map[string]bool{}
+	for _, r := range got {
+		paths[r.Path] = true
+	}
+	if !paths["Movie/Movie.2020.mkv"] {
+		t.Error("expected main video")
+	}
+	if paths["Movie/sample.mkv"] {
+		t.Error("sample should be dropped by largest_file_only")
+	}
+	if !paths["Movie/Movie.2020.en.srt"] || !paths["Movie/Movie.2020.forced.ass"] {
+		t.Errorf("expected matching subs, got %v", paths)
+	}
+	if paths["Movie/unrelated.srt"] {
+		t.Error("unrelated srt should not match stem")
+	}
+	if len(got) != 3 {
+		t.Errorf("expected 3 files, got %d: %v", len(got), paths)
+	}
+}
+
+func TestApplyFilter_LargestWithSrtInRegexStillDropsWithoutSidecars(t *testing.T) {
+	// file_regex includes srt but no sidecar_extensions → KeepLargest drops tiny srt.
+	f, err := NewFilter("/movies", "", "", `.*\.(mkv|srt)$`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "M/main.mkv", Size: 1000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "M/main.srt", Size: 10},
+	}
+	got := f.Apply(records)
+	if len(got) != 1 || got[0].Path != "M/main.mkv" {
+		t.Fatalf("expected only main.mkv, got %+v", got)
+	}
+}
+
+func TestApplyFilter_SidecarsSkipMinSize(t *testing.T) {
+	f, err := NewFilter("/tv", "", "", `.*\.mkv$`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WithSizeBounds(300*1024*1024, 0)
+	f.WithSidecarExtensions([]string{"srt"})
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "S/ep.mkv", Size: 500 * 1024 * 1024},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "S/ep.en.srt", Size: 80_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "S/tiny.mkv", Size: 50 * 1024 * 1024},
+	}
+	got := f.Apply(records)
+	paths := map[string]bool{}
+	for _, r := range got {
+		paths[r.Path] = true
+	}
+	if !paths["S/ep.mkv"] || !paths["S/ep.en.srt"] {
+		t.Errorf("expected ep + srt, got %v", paths)
+	}
+	if paths["S/tiny.mkv"] {
+		t.Error("tiny video under min_file_size should drop")
+	}
+}
+
+func TestApplyFilter_SidecarsWithoutLargest(t *testing.T) {
+	f, err := NewFilter("/tv", "", "", `.*\.mkv$`, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WithSidecarExtensions([]string{"srt"})
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "S/e1.mkv", Size: 100},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "S/e2.mkv", Size: 200},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "S/e1.srt", Size: 1},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "S/e2.en.srt", Size: 1},
+	}
+	got := f.Apply(records)
+	if len(got) != 4 {
+		t.Fatalf("expected all 4, got %d", len(got))
+	}
+}
+
 func TestApplyFilter_WithFilterTags_IncludeOverride(t *testing.T) {
 	// TV filter with "forcedtv" added to the include regex.
 	f, err := NewFilter("/tv", "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|forcedtv", "", `.*\.(mkv|mp4|avi)$`, false)

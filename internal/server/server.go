@@ -236,6 +236,7 @@ func buildFilters(vps []config.VirtualPathConfig) ([]*library.Filter, error) {
 		if _, err := f.WithPathSegmentExclude(vp.PathSegmentExclude); err != nil {
 			return nil, fmt.Errorf("building filter for %q: path_segment_exclude: %w", vp.Name, err)
 		}
+		f.WithSidecarExtensions(vp.SidecarExtensions)
 		filters = append(filters, f)
 	}
 	return filters, nil

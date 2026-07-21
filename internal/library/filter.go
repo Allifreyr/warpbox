@@ -16,9 +16,14 @@ type Filter struct {
 	PathSegmentExclude *regexp.Regexp
 	LargestFileOnly    bool
 	// MinSize / MaxSize are byte bounds applied after name filters.
-	// Zero means no bound (unlimited).
+	// Zero means no bound (unlimited). When SidecarExts is non-empty, size
+	// bounds apply only to primary (non-sidecar) files.
 	MinSize int64
 	MaxSize int64
+	// SidecarExts lists lowercase extensions without dots (e.g. "srt", "ass").
+	// Empty = feature off. When set, matching sidecar files are re-attached to
+	// kept primaries by basename stem after largest_file_only selection.
+	SidecarExts map[string]struct{}
 }
 
 func NewFilter(mount, dirInclude, dirExclude, fileRegex string, largestFileOnly bool) (*Filter, error) {
@@ -67,6 +72,34 @@ func (f *Filter) WithPathSegmentExclude(pattern string) (*Filter, error) {
 	}
 	f.PathSegmentExclude = r
 	return f, nil
+}
+
+// WithSidecarExtensions sets sidecar extensions (e.g. "srt", ".ASS") for sibling
+// keep-after-primary selection. Empty list clears the feature. Invalid empty
+// tokens are skipped. Returns f for chaining.
+func (f *Filter) WithSidecarExtensions(exts []string) *Filter {
+	f.SidecarExts = NormalizeSidecarExtensions(exts)
+	return f
+}
+
+// NormalizeSidecarExtensions lowercases, strips leading dots, and drops empties.
+func NormalizeSidecarExtensions(exts []string) map[string]struct{} {
+	if len(exts) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(exts))
+	for _, e := range exts {
+		e = strings.ToLower(strings.TrimSpace(e))
+		e = strings.TrimPrefix(e, ".")
+		if e == "" {
+			continue
+		}
+		out[e] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func ExtractDirectory(path string) string {
@@ -167,7 +200,10 @@ func (f *Filter) MatchDirectoryForItem(dir, filterTags string) bool {
 func (f *Filter) Apply(records []metadata.FileRecord) []metadata.FileRecord {
 	// Cache key: directory + tags (force routing depends on both).
 	dirMatchCache := make(map[string]bool, len(records)/2)
-	result := make([]metadata.FileRecord, 0, len(records))
+	sidecarsOn := len(f.SidecarExts) > 0
+
+	primaries := make([]metadata.FileRecord, 0, len(records))
+	sidecarCands := make([]metadata.FileRecord, 0)
 
 	for _, rec := range records {
 		dir := ExtractDirectory(rec.Path)
@@ -180,26 +216,144 @@ func (f *Filter) Apply(records []metadata.FileRecord) []metadata.FileRecord {
 		if !ok {
 			continue
 		}
-		rel := ExtractRelativePath(rec.Path)
-		if !f.MatchFile(rel) {
-			continue
-		}
 		// Drop files under Extras/Specials/… segments (not top-level title substrings).
 		if !f.MatchPathSegments(rec.Path) {
+			continue
+		}
+
+		rel := ExtractRelativePath(rec.Path)
+		isSidecar := sidecarsOn && IsSidecarPath(rec.Path, f.SidecarExts)
+
+		if isSidecar {
+			// Sidecars skip file_regex and size bounds (min_file_size would kill every .srt).
+			sidecarCands = append(sidecarCands, rec)
+			continue
+		}
+
+		if !f.MatchFile(rel) {
 			continue
 		}
 		// Size bounds before largest_file_only so samples under min drop first.
 		if !f.MatchSize(rec.Size) {
 			continue
 		}
-		result = append(result, rec)
+		primaries = append(primaries, rec)
 	}
 
 	if f.LargestFileOnly {
-		result = KeepLargest(result)
+		primaries = KeepLargest(primaries)
 	}
 
-	return result
+	if !sidecarsOn || len(sidecarCands) == 0 {
+		return primaries
+	}
+
+	return attachMatchingSidecars(primaries, sidecarCands, f.SidecarExts)
+}
+
+// knownVideoExts used to derive a primary stem for sidecar pairing.
+var knownVideoExts = map[string]struct{}{
+	"mkv": {}, "mp4": {}, "avi": {}, "m4v": {}, "mov": {},
+	"ts": {}, "wmv": {}, "webm": {}, "m2ts": {}, "mpg": {}, "mpeg": {},
+}
+
+// FileExt returns the lowercase extension without a leading dot, or "".
+func FileExt(name string) string {
+	base := name
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		base = name[i+1:]
+	}
+	dot := strings.LastIndexByte(base, '.')
+	if dot < 0 || dot == len(base)-1 {
+		return ""
+	}
+	return strings.ToLower(base[dot+1:])
+}
+
+// IsSidecarPath reports whether path's extension is in the sidecar set.
+func IsSidecarPath(path string, exts map[string]struct{}) bool {
+	if len(exts) == 0 {
+		return false
+	}
+	_, ok := exts[FileExt(path)]
+	return ok
+}
+
+// PrimaryStem returns the basename without a known video extension (or last ext).
+func PrimaryStem(path string) string {
+	base := path
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		base = path[i+1:]
+	}
+	dot := strings.LastIndexByte(base, '.')
+	if dot <= 0 {
+		return base
+	}
+	ext := strings.ToLower(base[dot+1:])
+	if _, ok := knownVideoExts[ext]; ok {
+		return base[:dot]
+	}
+	// Fallback: strip last extension even if unknown.
+	return base[:dot]
+}
+
+// SidecarMatchesPrimary reports whether a sidecar basename pairs with a primary.
+// Matches exact stem.ext or stem.<tags>.ext (e.g. Movie.en.srt, Movie.forced.ass).
+func SidecarMatchesPrimary(sidecarPath, primaryPath string, sidecarExts map[string]struct{}) bool {
+	if !IsSidecarPath(sidecarPath, sidecarExts) {
+		return false
+	}
+	sBase := sidecarPath
+	if i := strings.LastIndexByte(sidecarPath, '/'); i >= 0 {
+		sBase = sidecarPath[i+1:]
+	}
+	stem := PrimaryStem(primaryPath)
+	if stem == "" {
+		return false
+	}
+	// Compare case-insensitively.
+	sLower := strings.ToLower(sBase)
+	stemLower := strings.ToLower(stem)
+	ext := FileExt(sBase)
+	// Exact: stem.srt
+	if sLower == stemLower+"."+ext {
+		return true
+	}
+	// Prefixed tags: stem.en.srt, stem.eng.forced.ass
+	if strings.HasPrefix(sLower, stemLower+".") && strings.HasSuffix(sLower, "."+ext) {
+		return true
+	}
+	return false
+}
+
+// attachMatchingSidecars appends sidecars that match any kept primary by stem.
+// Dedupes by path. Preserves primary order, then sidecars in candidate order.
+func attachMatchingSidecars(primaries, sidecars []metadata.FileRecord, exts map[string]struct{}) []metadata.FileRecord {
+	if len(primaries) == 0 || len(sidecars) == 0 {
+		return primaries
+	}
+	seen := make(map[string]bool, len(primaries)+len(sidecars))
+	out := make([]metadata.FileRecord, 0, len(primaries)+len(sidecars))
+	for _, p := range primaries {
+		out = append(out, p)
+		seen[p.Path] = true
+	}
+	for _, s := range sidecars {
+		if seen[s.Path] {
+			continue
+		}
+		for _, p := range primaries {
+			if p.Source != s.Source || p.ItemID != s.ItemID {
+				continue
+			}
+			if SidecarMatchesPrimary(s.Path, p.Path, exts) {
+				out = append(out, s)
+				seen[s.Path] = true
+				break
+			}
+		}
+	}
+	return out
 }
 
 func KeepLargest(records []metadata.FileRecord) []metadata.FileRecord {

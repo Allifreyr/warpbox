@@ -22,14 +22,14 @@ type TorBoxConfig struct {
 // ServerConfig holds the WebDAV server settings.
 type ServerConfig struct {
 	ListenAddr  string `yaml:"listen_addr"`  // Default: ":1412"
-	EnablePprof bool  `yaml:"enable_pprof"` // Enable /debug/pprof/; default false
+	EnablePprof bool   `yaml:"enable_pprof"` // Enable /debug/pprof/; default false
 }
 
 // CacheConfig holds caching and CDN proxy parameters.
 type CacheConfig struct {
-	CDNURLTTLMinutes    int    `yaml:"cdn_url_ttl_minutes"`    // How long to cache CDN URLs; default: 120
-	CDNURLAutoRepair    *bool  `yaml:"cdn_url_auto_repair"`    // Auto-repair stale CDN URLs; nil→default true
-	CDNURLRepairRetries *int   `yaml:"cdn_url_repair_retries"` // Max CDN proxy retries per request; nil→default 2
+	CDNURLTTLMinutes    int   `yaml:"cdn_url_ttl_minutes"`    // How long to cache CDN URLs; default: 120
+	CDNURLAutoRepair    *bool `yaml:"cdn_url_auto_repair"`    // Auto-repair stale CDN URLs; nil→default true
+	CDNURLRepairRetries *int  `yaml:"cdn_url_repair_retries"` // Max CDN proxy retries per request; nil→default 2
 
 	// CDN URL fetch retry settings (for TorBox API errors, not CDN proxy errors).
 	CDNURLRetryBackoff *int `yaml:"cdn_url_retry_backoff"`  // Backoff base in seconds; nil→default 1
@@ -39,14 +39,14 @@ type CacheConfig struct {
 	NegativeCacheTTLSeconds *int `yaml:"negative_cache_ttl_seconds"` // How long to cache failed results; nil→default 30
 
 	// Circuit breaker: per-torrent failure tracking.
-	CircuitBreakerFailures   *int `yaml:"circuit_breaker_failures"`    // Max failures in window; nil→default 5
-	CircuitBreakerWindowSec  *int `yaml:"circuit_breaker_window_seconds"` // Sliding window; nil→default 60
-	CircuitBreakerStaleMin   *int `yaml:"circuit_breaker_stale_minutes"` // Stale duration; nil→default 5
+	CircuitBreakerFailures  *int `yaml:"circuit_breaker_failures"`       // Max failures in window; nil→default 5
+	CircuitBreakerWindowSec *int `yaml:"circuit_breaker_window_seconds"` // Sliding window; nil→default 60
+	CircuitBreakerStaleMin  *int `yaml:"circuit_breaker_stale_minutes"`  // Stale duration; nil→default 5
 
 	// Memory management settings.
-	NegativeCacheMaxEntries   *int `yaml:"negative_cache_max_entries"`   // Max entries in negative cache; nil→default 5000
-	CircuitBreakerMaxEntries  *int `yaml:"circuit_breaker_max_entries"`  // Max entries in circuit breaker; nil→default 2000
-	CleanupIntervalSeconds    *int `yaml:"cleanup_interval_seconds"`     // Sweep interval; nil→default 60
+	NegativeCacheMaxEntries  *int `yaml:"negative_cache_max_entries"`  // Max entries in negative cache; nil→default 5000
+	CircuitBreakerMaxEntries *int `yaml:"circuit_breaker_max_entries"` // Max entries in circuit breaker; nil→default 2000
+	CleanupIntervalSeconds   *int `yaml:"cleanup_interval_seconds"`    // Sweep interval; nil→default 60
 
 	// CDN proxy settings.
 	MaxCDNConnections *int `yaml:"max_cdn_connections"` // Max concurrent CDN proxy connections; nil→default 4
@@ -81,11 +81,11 @@ type StatsConfig struct {
 
 // VirtualPathConfig holds a single virtual path with its filters.
 type VirtualPathConfig struct {
-	Name             string `yaml:"name"`               // Virtual directory name, e.g. "movies"
-	DirectoryInclude string `yaml:"directory_include"`  // Include dirs matching this regex
-	DirectoryExclude string `yaml:"directory_exclude"`  // Exclude dirs matching this regex
-	FileRegex        string `yaml:"file_regex"`         // Regex applied to file paths within torrents
-	LargestFileOnly  bool   `yaml:"largest_file_only"`  // Show only the largest file per torrent
+	Name             string `yaml:"name"`              // Virtual directory name, e.g. "movies"
+	DirectoryInclude string `yaml:"directory_include"` // Include dirs matching this regex
+	DirectoryExclude string `yaml:"directory_exclude"` // Exclude dirs matching this regex
+	FileRegex        string `yaml:"file_regex"`        // Regex applied to file paths within torrents
+	LargestFileOnly  bool   `yaml:"largest_file_only"` // Show only the largest file per torrent
 	// Optional size bounds for files in this virtual view (human-readable,
 	// e.g. "300MB", "10GB"). Empty = no bound. Binary units (1024).
 	MinFileSize string `yaml:"min_file_size"`
@@ -95,14 +95,19 @@ type VirtualPathConfig struct {
 	// Prefer anchored patterns like (?i)^(extras|specials)$ so release titles
 	// containing those words are not dropped.
 	PathSegmentExclude string `yaml:"path_segment_exclude"`
+	// SidecarExtensions lists file extensions (e.g. srt, ass) kept as siblings
+	// of surviving primary files after largest_file_only. Empty = off.
+	// Not required in file_regex; size bounds do not apply to these files.
+	// Example: ["srt", "ass"] with largest_file_only keeps main video + matching subs.
+	SidecarExtensions []string `yaml:"sidecar_extensions"`
 }
 
 // LibraryConfig holds settings for the virtual library feature.
 type LibraryConfig struct {
-	VirtualPaths     []VirtualPathConfig `yaml:"virtual_paths"`
-	OnItemsAdded     string              `yaml:"on_items_added"`   // Shell command for new items
-	OnItemsRemoved   string              `yaml:"on_items_removed"` // Shell command for removed items
-	HookTimeoutSec   int                 `yaml:"hook_timeout_seconds"` // Hook execution timeout; default 30
+	VirtualPaths   []VirtualPathConfig `yaml:"virtual_paths"`
+	OnItemsAdded   string              `yaml:"on_items_added"`       // Shell command for new items
+	OnItemsRemoved string              `yaml:"on_items_removed"`     // Shell command for removed items
+	HookTimeoutSec int                 `yaml:"hook_timeout_seconds"` // Hook execution timeout; default 30
 	// OverrideTags lists extra TorBox tags stored for filter matching (and rename).
 	// Force-into-library tags are automatic: forced{virtual_path_name} for each
 	// configured path (e.g. path "movies" → tag "forcedmovies"). Default: ["rename"].
@@ -385,6 +390,13 @@ func validateLibrary(l *LibraryConfig) error {
 		if vp.PathSegmentExclude != "" {
 			if _, err := regexp.Compile(vp.PathSegmentExclude); err != nil {
 				return fmt.Errorf("library.virtual_paths[%d].path_segment_exclude: %w", i, err)
+			}
+		}
+		for j, ext := range vp.SidecarExtensions {
+			e := strings.TrimSpace(ext)
+			e = strings.TrimPrefix(e, ".")
+			if e == "" {
+				return fmt.Errorf("library.virtual_paths[%d].sidecar_extensions[%d] is empty", i, j)
 			}
 		}
 

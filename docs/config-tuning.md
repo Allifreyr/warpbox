@@ -168,9 +168,12 @@ Each virtual path is a name plus regex filters, optional size bounds, and a `lar
 | `min_file_size` | Optional minimum file size (e.g. `300MB`). Omitting = no minimum. Binary units (1MB = 1024² bytes). | Hide samples and tiny junk |
 | `max_file_size` | Optional maximum file size (e.g. `10GB`). Omitting = no maximum. | Hide oversized remuxes from a mount |
 | `path_segment_exclude` | Optional regex matched against **each path segment**. If any segment matches, that file is hidden. | Drop `Extras/`, `Specials/`, `Featurettes/` folders |
-| `largest_file_only` | When true, only the largest file in the torrent is shown. Hides extras (sample files, subtitles, etc.) within the filtered view. | Usually want this on for both movies and TV |
+| `largest_file_only` | When true, only the largest **primary** file (among `file_regex` matches) is shown. Hides samples/featurettes. | Usually want this on for movies; for TV season packs it keeps one episode only |
+| `sidecar_extensions` | Optional list of companion extensions (e.g. `srt`, `ass`). Empty/omit = off. After primary selection, keep files with those extensions whose basename matches a kept primary stem (`Movie.en.srt`). Not required in `file_regex`. Size bounds do **not** apply to these files. | Keep external subs with `largest_file_only` without putting `srt` in `file_regex` |
 
-Filter order: directory (top-level + force tags) → `file_regex` → **path segments** → size bounds → `largest_file_only`.
+Filter order: directory (top-level + force tags) → path segments → split primary (`file_regex` + size) vs sidecar (extension list, no size) → `largest_file_only` on primaries only → attach matching sidecars by stem.
+
+**Note:** Listing `srt` only in `file_regex` with `largest_file_only: true` still drops subs (they lose the size contest). Use `sidecar_extensions: [srt, ass]` instead (or as well). Adding external audio later is config-only (e.g. `mka`).
 
 **`path_segment_exclude` tip:** Use an **anchored** pattern such as `(?i)^(extras|specials|featurettes|bonus|sample|samples)$` so a folder *named* `Specials` is excluded, but a release title like `… Season 1-11 Specials (1080p …)/Season 10/ep.mkv` still shows season episodes. Empty / omitted = off (no change from older configs).
 

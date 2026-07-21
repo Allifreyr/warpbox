@@ -128,8 +128,15 @@ library:
       directory_exclude: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b"
       file_regex: ".*\\.(mkv|mp4|avi)$"
       largest_file_only: true
+      # Keep matching companion files (by basename stem) after largest_file_only.
+      # Extensions only (with or without a leading dot). Empty / omit = off.
+      # Size bounds do NOT apply to these files. Prefer video-only file_regex.
+      # sidecar_extensions:
+      #   - srt
+      #   - ass
       # Optional size bounds for this virtual view only (binary units: 1MB = 1024^2).
-      # Empty / omitted = no limit. Applied after file_regex, before largest_file_only.
+      # Empty / omitted = no limit. Applied after file_regex, before largest_file_only
+      # (to primary files only when sidecar_extensions is set).
       # min_file_size: 300MB
       # max_file_size: 10GB
       # Optional: drop files under path segments matching this regex (folder names).
@@ -140,6 +147,9 @@ library:
       directory_include: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b"
       file_regex: ".*\\.(mkv|mp4|avi)$"
       largest_file_only: true
+      # sidecar_extensions:
+      #   - srt
+      #   - ass
       # min_file_size: 50MB
       # max_file_size: 5GB
       # path_segment_exclude: "(?i)^(extras|specials|featurettes|bonus|sample|samples)$"

@@ -599,6 +599,53 @@ library:
 	}
 }
 
+func TestLoadLibrarySidecarExtensions(t *testing.T) {
+	content := []byte(`
+torbox:
+  api_key: "test-key"
+library:
+  virtual_paths:
+    - name: "movies"
+      file_regex: ".*\\.mkv$"
+      largest_file_only: true
+      sidecar_extensions:
+        - srt
+        - .ASS
+`)
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	got := cfg.Library.VirtualPaths[0].SidecarExtensions
+	if len(got) != 2 || got[0] != "srt" || got[1] != ".ASS" {
+		t.Errorf("sidecar_extensions = %#v", got)
+	}
+}
+
+func TestLoadLibraryEmptySidecarExtension(t *testing.T) {
+	content := []byte(`
+torbox:
+  api_key: "test-key"
+library:
+  virtual_paths:
+    - name: "movies"
+      sidecar_extensions:
+        - ""
+`)
+	tmp := t.TempDir() + "/config.yml"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(tmp)
+	if err == nil {
+		t.Fatal("expected error for empty sidecar_extensions entry")
+	}
+}
+
 func TestLoadLibraryDuplicateMount(t *testing.T) {
 	content := []byte(`
 torbox:
