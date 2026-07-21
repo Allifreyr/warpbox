@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.4-v0.8.0] - 2026-07-21
+
 ### Added
 - Per–virtual-path `sidecar_extensions` (e.g. `srt`, `ass`): after primary selection (including `largest_file_only`), keep companion files that match a kept primary’s basename stem (`Movie.en.srt`, `Movie.forced.ass`). Empty = off (default). Not required in `file_regex`; `min_file_size` / `max_file_size` apply to primaries only when this list is set. Adding audio later is config-only (e.g. `mka`). Pairing uses the **longest** matching stem among pre-`largest_file_only` primaries (kept preferred on ties), language/modifier tags only (incl. regions like `en-us` / `es-419`), so `Featurette`/`Sample` middles and regex-failed siblings do not steal subs.
 
@@ -205,7 +207,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.4-v0.7.0...HEAD
+[Unreleased]: /compare/v0.7.4-v0.8.0...HEAD
+[v0.7.4-v0.8.0]: /compare/v0.7.3-v0.7.0...v0.7.4-v0.8.0
 [v0.7.4-v0.7.0]: /compare/v0.7.3-v0.6.0...v0.7.4-v0.7.0
 [v0.7.3-v0.6.0]: /compare/v0.7.2-v0.5.1...v0.7.3-v0.6.0
 [v0.7.2-v0.5.1]: /compare/v0.7.1-v0.5.0...v0.7.2-v0.5.1
