@@ -171,9 +171,26 @@ Each virtual path is a name plus regex filters, optional size bounds, and a `lar
 | `largest_file_only` | When true, only the largest **primary** file (among `file_regex` matches) is shown. Hides samples/featurettes. | Usually want this on for movies; for TV season packs it keeps one episode only |
 | `sidecar_extensions` | Optional list of companion extensions (e.g. `srt`, `ass`). Empty/omit = off. After primary selection, keep files with those extensions whose basename matches a kept primary stem (`Movie.en.srt`). Not required in `file_regex`. Size bounds do **not** apply to these files. | Keep external subs with `largest_file_only` without putting `srt` in `file_regex` |
 
-Filter order: directory (top-level + force tags) → path segments → split primary (`file_regex` + size) vs sidecar (extension list, no size) → `largest_file_only` on primaries only → attach matching sidecars by stem.
+Filter order: directory (top-level + force tags) → path segments → split primary (`file_regex` + size) vs sidecar (extension list, no size) → `largest_file_only` on primaries only → attach matching sidecars by **longest** stem among pre-largest primaries (so a featurette sub does not stick to the main feature; regex-failed siblings are ignored).
 
 **Note:** Listing `srt` only in `file_regex` with `largest_file_only: true` still drops subs (they lose the size contest). Use `sidecar_extensions: [srt, ass]` instead (or as well). Adding external audio later is config-only (e.g. `mka`).
+
+**Stem matching:** Pairing is basename-based after stripping the primary file’s extension.
+
+1. The sidecar must start with the primary stem, then either `.ext` or `.<tags>.ext`.
+2. Each middle tag must be a **language code** (2–3 letters, optional region like `en-us` or UN M.49 `es-419`) or a known modifier (`forced`, `sdh`, `hi`, `cc`, …). Tokens such as `Sample`, `Featurette`, or `Extras` are **not** tags — they are part of a longer video stem (or the sidecar is dropped).
+3. Candidates are primaries that already passed `file_regex` and size bounds (including those later dropped by `largest_file_only`). Longest stem wins; on a tie, a still-kept primary is preferred. The sidecar is listed only if that best primary is still kept.
+
+| Video file | Subtitle file | Kept? |
+|------------|---------------|--------|
+| `Movie.2020.mkv` | `Movie.2020.en.srt` | Yes |
+| `Movie.2020.mkv` | `Movie.2020.eng.forced.ass` | Yes |
+| `Movie.2020.mkv` | `Movie.2020.es-419.srt` | Yes |
+| `Movie.2020.mkv` + dropped `Movie.2020.Featurette.mkv` | `Movie.2020.Featurette.en.srt` | No (belongs to featurette; longest stem not kept) |
+| `Movie.2020.mkv` | `Movie.2020.Sample.srt` | No (`Sample` is not a language tag) |
+| `Title.2020.1080p.BluRay.x264-GROUP.mkv` | `Title.2020.en.srt` | **No** — real releases often differ here; rename so stems match (or put the full release stem on the sub) |
+
+**Real-world naming:** Scene/P2P videos often include resolution and group (`Title.2020.1080p…GROUP.mkv`) while external subs are short (`Title.2020.en.srt`). Warpbox does **not** fuzzy-match those — only an exact stem prefix with language-style tags. Rename one side, or disable `largest_file_only` and include the sub extension in `file_regex` if you need looser retention.
 
 **`path_segment_exclude` tip:** Use an **anchored** pattern such as `(?i)^(extras|specials|featurettes|bonus|sample|samples)$` so a folder *named* `Specials` is excluded, but a release title like `… Season 1-11 Specials (1080p …)/Season 10/ep.mkv` still shows season episodes. Empty / omitted = off (no change from older configs).
 

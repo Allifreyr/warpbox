@@ -393,10 +393,18 @@ func validateLibrary(l *LibraryConfig) error {
 			}
 		}
 		for j, ext := range vp.SidecarExtensions {
-			e := strings.TrimSpace(ext)
-			e = strings.TrimPrefix(e, ".")
+			e := strings.ToLower(strings.TrimSpace(ext))
+			for strings.HasPrefix(e, ".") {
+				e = strings.TrimPrefix(e, ".")
+			}
 			if e == "" {
 				return fmt.Errorf("library.virtual_paths[%d].sidecar_extensions[%d] is empty", i, j)
+			}
+			// Bare alphanumeric extension only (srt, ass, mka) — no dots/paths/junk.
+			for _, r := range e {
+				if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+					return fmt.Errorf("library.virtual_paths[%d].sidecar_extensions[%d] %q must be a bare extension (e.g. srt, ass)", i, j, ext)
+				}
 			}
 		}
 

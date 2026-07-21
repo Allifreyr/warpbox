@@ -117,26 +117,15 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// At the root level with virtual paths configured, show synthetic dirs.
 	if rawVirtualPath == "" {
-		// Compute total sizes for each virtual path (matching only, not largest).
+		// Totals for each virtual path use full Apply so sidecar_extensions
+		// and largest_file_only match what the mount actually lists.
 		var allTotal int64
-		filterTotals := make(map[int]int64, len(s.virtualFilters))
 		for _, rec := range records {
 			allTotal += rec.Size
-			for i, vf := range s.virtualFilters {
-				dir := library.ExtractDirectory(rec.Path)
-				if !vf.MatchDirectoryForItem(dir, rec.FilterTags) {
-					continue
-				}
-				rel := library.ExtractRelativePath(rec.Path)
-				if !vf.MatchFile(rel) {
-					continue
-				}
-				if !vf.MatchPathSegments(rec.Path) {
-					continue
-				}
-				if !vf.MatchSize(rec.Size) {
-					continue
-				}
+		}
+		filterTotals := make(map[int]int64, len(s.virtualFilters))
+		for i, vf := range s.virtualFilters {
+			for _, rec := range vf.Apply(records) {
 				filterTotals[i] += rec.Size
 			}
 		}
@@ -147,47 +136,47 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		for _, rec := range records {
-		rel := strings.TrimPrefix(rec.Path, virtualPath)
-		rel = strings.TrimPrefix(rel, "/")
+			rel := strings.TrimPrefix(rec.Path, virtualPath)
+			rel = strings.TrimPrefix(rel, "/")
 
-		firstSlash := strings.Index(rel, "/")
-		var displayName string
-		var href string
+			firstSlash := strings.Index(rel, "/")
+			var displayName string
+			var href string
 
-		if firstSlash >= 0 {
-			displayName = rel[:firstSlash]
-			if ag, ok := dirMap[displayName]; ok {
-				ag.totalSize += rec.Size
+			if firstSlash >= 0 {
+				displayName = rel[:firstSlash]
+				if ag, ok := dirMap[displayName]; ok {
+					ag.totalSize += rec.Size
+					continue
+				}
+				if virtualPath == "" {
+					href = encodeDAVHref("/http" + mountPrefix + "/" + displayName + "/")
+				} else {
+					href = encodeDAVHref("/http" + mountPrefix + "/" + virtualPath + "/" + displayName + "/")
+				}
+				dirMap[displayName] = &dirAgg{name: displayName, href: href, totalSize: rec.Size}
+				dirOrder = append(dirOrder, displayName)
 				continue
-			}
-			if virtualPath == "" {
-				href = encodeDAVHref("/http" + mountPrefix + "/" + displayName + "/")
 			} else {
-				href = encodeDAVHref("/http" + mountPrefix + "/" + virtualPath + "/" + displayName + "/")
+				displayName = rel
+				if virtualPath == "" {
+					href = encodeDAVHref("/http" + mountPrefix + "/" + rel)
+				} else {
+					href = encodeDAVHref("/http" + mountPrefix + "/" + virtualPath + "/" + rel)
+				}
 			}
-			dirMap[displayName] = &dirAgg{name: displayName, href: href, totalSize: rec.Size}
-			dirOrder = append(dirOrder, displayName)
-			continue
-		} else {
-			displayName = rel
-			if virtualPath == "" {
-				href = encodeDAVHref("/http" + mountPrefix + "/" + rel)
-			} else {
-				href = encodeDAVHref("/http" + mountPrefix + "/" + virtualPath + "/" + rel)
-			}
-		}
 
-		mime := rec.MimeType
+			mime := rec.MimeType
 			if mime == "" {
 				mime = "application/octet-stream"
 			}
 			fileHref := encodeDAVHref("/http" + mountPrefix + "/" + rec.Path)
 			files = append(files, entry{
-				Name:   displayName,
-				Href:   fileHref,
-				Size:   rec.Size,
-				IsDir:  false,
-				Mime:   mime,
+				Name:  displayName,
+				Href:  fileHref,
+				Size:  rec.Size,
+				IsDir: false,
+				Mime:  mime,
 			})
 		}
 	}

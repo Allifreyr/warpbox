@@ -646,6 +646,28 @@ library:
 	}
 }
 
+func TestLoadLibraryInvalidSidecarExtension(t *testing.T) {
+	// Bare alphanumeric only — reject dots, paths, spaces, punctuation.
+	for _, bad := range []string{"..", "srt.ass", "foo/bar", `foo\bar`, "s rt", "srt;rm", "srt!"} {
+		content := []byte(fmt.Sprintf(`
+torbox:
+  api_key: "test-key"
+library:
+  virtual_paths:
+    - name: "movies"
+      sidecar_extensions:
+        - %q
+`, bad))
+		tmp := t.TempDir() + "/config.yml"
+		if err := os.WriteFile(tmp, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(tmp); err == nil {
+			t.Errorf("expected error for sidecar_extensions %q", bad)
+		}
+	}
+}
+
 func TestLoadLibraryDuplicateMount(t *testing.T) {
 	content := []byte(`
 torbox:

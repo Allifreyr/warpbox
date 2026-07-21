@@ -82,7 +82,8 @@ func (f *Filter) WithSidecarExtensions(exts []string) *Filter {
 	return f
 }
 
-// NormalizeSidecarExtensions lowercases, strips leading dots, and drops empties.
+// NormalizeSidecarExtensions lowercases, strips all leading dots, and drops empties.
+// Matches config validation so "..srt" and ".srt" both become "srt".
 func NormalizeSidecarExtensions(exts []string) map[string]struct{} {
 	if len(exts) == 0 {
 		return nil
@@ -90,7 +91,9 @@ func NormalizeSidecarExtensions(exts []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(exts))
 	for _, e := range exts {
 		e = strings.ToLower(strings.TrimSpace(e))
-		e = strings.TrimPrefix(e, ".")
+		for strings.HasPrefix(e, ".") {
+			e = strings.TrimPrefix(e, ".")
+		}
 		if e == "" {
 			continue
 		}
@@ -240,6 +243,11 @@ func (f *Filter) Apply(records []metadata.FileRecord) []metadata.FileRecord {
 		primaries = append(primaries, rec)
 	}
 
+	// Pair against primaries that passed dir/segment/file_regex/size, including
+	// losers of largest_file_only (so Featurette.en.srt binds to Featurette.mkv).
+	// Do not scan the raw input list: a same-stem file that failed file_regex
+	// (e.g. Movie.mp4 beside kept Movie.mkv) must not steal ownership.
+	preLargest := primaries
 	if f.LargestFileOnly {
 		primaries = KeepLargest(primaries)
 	}
@@ -248,7 +256,7 @@ func (f *Filter) Apply(records []metadata.FileRecord) []metadata.FileRecord {
 		return primaries
 	}
 
-	return attachMatchingSidecars(primaries, sidecarCands, f.SidecarExts)
+	return attachMatchingSidecars(primaries, preLargest, sidecarCands, f.SidecarExts)
 }
 
 // knownVideoExts used to derive a primary stem for sidecar pairing.
@@ -297,8 +305,72 @@ func PrimaryStem(path string) string {
 	return base[:dot]
 }
 
+// sidecarModifierTags are non-language tokens commonly used in external
+// subtitle / audio basenames (case-folded).
+var sidecarModifierTags = map[string]struct{}{
+	"forced": {}, "sdh": {}, "hi": {}, "cc": {}, "full": {},
+	"default": {}, "foreign": {}, "commentary": {}, "subs": {}, "sub": {},
+	"dub": {}, "hearing": {}, "impaired": {}, "orig": {}, "original": {},
+}
+
+// isValidSidecarTag reports whether one dotted segment between stem and
+// extension is a language code or known subtitle/audio modifier.
+// Rejects release junk such as "sample", "featurette", "extras".
+func isValidSidecarTag(tag string) bool {
+	if tag == "" {
+		return false
+	}
+	if _, ok := sidecarModifierTags[tag]; ok {
+		return true
+	}
+	// ISO 639-1/2/3 language, optional region (en, eng, en-us, pt-br, es-419).
+	parts := strings.SplitN(tag, "-", 2)
+	if len(parts[0]) < 2 || len(parts[0]) > 3 {
+		return false
+	}
+	for _, r := range parts[0] {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	if len(parts) == 1 {
+		return true
+	}
+	return isValidSidecarRegion(parts[1])
+}
+
+// isValidSidecarRegion accepts BCP47-ish regions: 2–4 letters, or UN M.49
+// 3-digit codes (e.g. 419 for Latin America).
+func isValidSidecarRegion(reg string) bool {
+	if len(reg) == 3 {
+		digit := true
+		for _, r := range reg {
+			if r < '0' || r > '9' {
+				digit = false
+				break
+			}
+		}
+		if digit {
+			return true
+		}
+	}
+	if len(reg) < 2 || len(reg) > 4 {
+		return false
+	}
+	for _, r := range reg {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
 // SidecarMatchesPrimary reports whether a sidecar basename pairs with a primary.
-// Matches exact stem.ext or stem.<tags>.ext (e.g. Movie.en.srt, Movie.forced.ass).
+// Matches stem.ext or stem.<tags>.ext where each tag is a language code or
+// known modifier (e.g. Movie.en.srt, Movie.eng.forced.ass) — not arbitrary
+// tokens like Sample/Featurette (those need a matching video stem).
+// Callers that run after largest_file_only should use longest-stem selection
+// (see attachMatchingSidecars) so Featurette.en.srt does not bind to Movie.mkv.
 func SidecarMatchesPrimary(sidecarPath, primaryPath string, sidecarExts map[string]struct{}) bool {
 	if !IsSidecarPath(sidecarPath, sidecarExts) {
 		return false
@@ -311,47 +383,86 @@ func SidecarMatchesPrimary(sidecarPath, primaryPath string, sidecarExts map[stri
 	if stem == "" {
 		return false
 	}
-	// Compare case-insensitively.
 	sLower := strings.ToLower(sBase)
 	stemLower := strings.ToLower(stem)
 	ext := FileExt(sBase)
-	// Exact: stem.srt
-	if sLower == stemLower+"."+ext {
-		return true
+	if ext == "" || !strings.HasPrefix(sLower, stemLower+".") {
+		return false
 	}
-	// Prefixed tags: stem.en.srt, stem.eng.forced.ass
-	if strings.HasPrefix(sLower, stemLower+".") && strings.HasSuffix(sLower, "."+ext) {
-		return true
+	// Strip "stem." prefix; remainder is "ext" or "tags.ext".
+	rest := sLower[len(stemLower)+1:]
+	if rest == ext {
+		return true // exact stem.ext
 	}
-	return false
+	suffix := "." + ext
+	if !strings.HasSuffix(rest, suffix) {
+		return false
+	}
+	middle := rest[:len(rest)-len(suffix)]
+	if middle == "" {
+		return false // stem..ext
+	}
+	for _, tag := range strings.Split(middle, ".") {
+		if !isValidSidecarTag(tag) {
+			return false
+		}
+	}
+	return true
 }
 
-// attachMatchingSidecars appends sidecars that match any kept primary by stem.
-// Dedupes by path. Preserves primary order, then sidecars in candidate order.
-func attachMatchingSidecars(primaries, sidecars []metadata.FileRecord, exts map[string]struct{}) []metadata.FileRecord {
-	if len(primaries) == 0 || len(sidecars) == 0 {
-		return primaries
+// bestPrimaryForSidecar picks the same-item primary with the longest PrimaryStem
+// that SidecarMatchesPrimary accepts. On equal stem length, prefers a path still
+// in keptPaths so a smaller same-stem copy does not steal the sidecar.
+// candidates should be pre-largest_file_only primaries (not the raw file list).
+func bestPrimaryForSidecar(sidecar metadata.FileRecord, candidates []metadata.FileRecord, exts map[string]struct{}, keptPaths map[string]bool) (best metadata.FileRecord, ok bool) {
+	bestLen := -1
+	bestKept := false
+	for _, v := range candidates {
+		if v.Source != sidecar.Source || v.ItemID != sidecar.ItemID {
+			continue
+		}
+		if !SidecarMatchesPrimary(sidecar.Path, v.Path, exts) {
+			continue
+		}
+		n := len(PrimaryStem(v.Path))
+		kept := keptPaths[v.Path]
+		// Longer stem wins; on a tie, prefer a kept primary.
+		if n > bestLen || (n == bestLen && kept && !bestKept) {
+			bestLen = n
+			best = v
+			bestKept = kept
+			ok = true
+		}
 	}
-	seen := make(map[string]bool, len(primaries)+len(sidecars))
-	out := make([]metadata.FileRecord, 0, len(primaries)+len(sidecars))
-	for _, p := range primaries {
+	return best, ok
+}
+
+// attachMatchingSidecars appends sidecars whose best-matching same-item primary
+// (longest stem among candidates, kept preferred on ties) is still in keptPrimaries.
+// candidates must be pre-largest primaries (passed file_regex/size), not the raw
+// item file list.
+func attachMatchingSidecars(keptPrimaries, candidates, sidecars []metadata.FileRecord, exts map[string]struct{}) []metadata.FileRecord {
+	if len(keptPrimaries) == 0 || len(sidecars) == 0 {
+		return keptPrimaries
+	}
+	keptPaths := make(map[string]bool, len(keptPrimaries))
+	seen := make(map[string]bool, len(keptPrimaries)+len(sidecars))
+	out := make([]metadata.FileRecord, 0, len(keptPrimaries)+len(sidecars))
+	for _, p := range keptPrimaries {
 		out = append(out, p)
+		keptPaths[p.Path] = true
 		seen[p.Path] = true
 	}
 	for _, s := range sidecars {
 		if seen[s.Path] {
 			continue
 		}
-		for _, p := range primaries {
-			if p.Source != s.Source || p.ItemID != s.ItemID {
-				continue
-			}
-			if SidecarMatchesPrimary(s.Path, p.Path, exts) {
-				out = append(out, s)
-				seen[s.Path] = true
-				break
-			}
+		best, found := bestPrimaryForSidecar(s, candidates, exts, keptPaths)
+		if !found || !keptPaths[best.Path] {
+			continue
 		}
+		out = append(out, s)
+		seen[s.Path] = true
 	}
 	return out
 }

@@ -128,9 +128,12 @@ library:
       directory_exclude: "(?i)(season|episode)s?\\.?\\d?|[se]\\d\\d|\\b(tv|complete)|\\b(saison|stage)\\.?\\d|[a-z]\\s?-\\s?\\d{2,4}\\b|\\d{2,4}\\s?-\\s?\\d{2,4}\\b"
       file_regex: ".*\\.(mkv|mp4|avi)$"
       largest_file_only: true
-      # Keep matching companion files (by basename stem) after largest_file_only.
-      # Extensions only (with or without a leading dot). Empty / omit = off.
+      # Keep matching companion files after largest_file_only (by basename stem).
+      # Extensions only (e.g. srt, ass — leading dot optional). Empty / omit = off.
       # Size bounds do NOT apply to these files. Prefer video-only file_regex.
+      # Stem + optional language tags only: Movie.2020.mkv + Movie.2020.en.srt OK.
+      # Real releases often differ (Title.2020.1080p…GROUP.mkv vs Title.2020.en.srt)
+      # — those do NOT pair; rename so stems match. Sample/Featurette are not tags.
       # sidecar_extensions:
       #   - srt
       #   - ass

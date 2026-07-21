@@ -309,12 +309,15 @@ func TestApplyFilter_LargestFileOnly(t *testing.T) {
 }
 
 func TestNormalizeSidecarExtensions(t *testing.T) {
-	got := NormalizeSidecarExtensions([]string{".SRT", " ass ", "", ".", "srt"})
+	got := NormalizeSidecarExtensions([]string{".SRT", " ass ", "", ".", "..srt", "srt"})
 	if len(got) != 2 {
 		t.Fatalf("expected 2 unique exts, got %d: %v", len(got), got)
 	}
 	if _, ok := got["srt"]; !ok {
 		t.Error("missing srt")
+	}
+	if _, ok := got[".srt"]; ok {
+		t.Error("multi-leading-dot ..srt must normalize to srt, not .srt")
 	}
 	if _, ok := got["ass"]; !ok {
 		t.Error("missing ass")
@@ -341,10 +344,21 @@ func TestSidecarMatchesPrimary(t *testing.T) {
 	}{
 		{"Movie/Show.S01E01.srt", "Movie/Show.S01E01.mkv", true},
 		{"Movie/Show.S01E01.en.srt", "Movie/Show.S01E01.mkv", true},
+		{"Movie/Show.S01E01.en-us.srt", "Movie/Show.S01E01.mkv", true},
+		{"Movie/Show.S01E01.es-419.srt", "Movie/Show.S01E01.mkv", true}, // UN M.49 region
+		{"Movie/Show.S01E01.zh-hans.srt", "Movie/Show.S01E01.mkv", true},
 		{"Movie/Show.S01E01.eng.forced.ass", "Movie/Show.S01E01.mkv", true},
 		{"Movie/Show.S01E01.ASS", "Movie/Show.S01E01.mkv", true},
 		{"Movie/other.srt", "Movie/Show.S01E01.mkv", false},
 		{"Movie/Show.S01E02.srt", "Movie/Show.S01E01.mkv", false},
+		// Bad regions / junk middle tokens
+		{"Movie/Show.S01E01.en-1234.srt", "Movie/Show.S01E01.mkv", false}, // 4-digit region invalid
+		{"Movie/Show.S01E01.english.srt", "Movie/Show.S01E01.mkv", false},  // full language name not a tag
+		// Arbitrary middle tokens are not language tags — need matching video stem.
+		{"Movie/Movie.2020.Sample.srt", "Movie/Movie.2020.mkv", false},
+		{"Movie/Movie.2020.Featurette.en.srt", "Movie/Movie.2020.mkv", false},
+		{"Movie/Movie.2020.Featurette.en.srt", "Movie/Movie.2020.Featurette.mkv", true},
+		{"Movie/Movie.2020.Extras.srt", "Movie/Movie.2020.mkv", false},
 	}
 	for _, tc := range cases {
 		if got := SidecarMatchesPrimary(tc.sub, tc.vid, exts); got != tc.want {
@@ -385,6 +399,43 @@ func TestApplyFilter_LargestWithSidecars(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Errorf("expected 3 files, got %d: %v", len(got), paths)
+	}
+}
+
+// Longest-stem: Featurette.en.srt must not attach to main Movie.2020.mkv when
+// Featurette.mkv lost largest_file_only.
+func TestApplyFilter_SidecarLongestStemNotMain(t *testing.T) {
+	f, err := NewFilter("/movies", "", "", `.*\.mkv$`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WithSidecarExtensions([]string{"srt"})
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "P/Movie.2020.mkv", Size: 5_000_000_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "P/Movie.2020.Featurette.mkv", Size: 200_000_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "P/Movie.2020.en.srt", Size: 50_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "P/Movie.2020.Featurette.en.srt", Size: 40_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "P/Movie.2020.Sample.srt", Size: 5_000},
+	}
+	got := f.Apply(records)
+	paths := map[string]bool{}
+	for _, r := range got {
+		paths[r.Path] = true
+	}
+	if !paths["P/Movie.2020.mkv"] {
+		t.Fatal("expected main video")
+	}
+	if paths["P/Movie.2020.Featurette.mkv"] {
+		t.Error("featurette video should be dropped")
+	}
+	if !paths["P/Movie.2020.en.srt"] {
+		t.Error("main en.srt should attach to main video")
+	}
+	if paths["P/Movie.2020.Featurette.en.srt"] {
+		t.Error("featurette srt must not attach to shorter-stem main")
+	}
+	if paths["P/Movie.2020.Sample.srt"] {
+		t.Error("sample srt with no matching kept video should drop")
 	}
 }
 
@@ -444,6 +495,127 @@ func TestApplyFilter_SidecarsWithoutLargest(t *testing.T) {
 	got := f.Apply(records)
 	if len(got) != 4 {
 		t.Fatalf("expected all 4, got %d", len(got))
+	}
+}
+
+// Regex-failed same-stem sibling must not steal longest-stem ownership.
+// Movie.mp4 fails file_regex; Movie.mkv is kept; srt must still attach.
+func TestApplyFilter_SidecarIgnoresRegexFailedSibling(t *testing.T) {
+	f, err := NewFilter("/movies", "", "", `.*\.mkv$`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WithSidecarExtensions([]string{"srt"})
+	// Put mp4 first so order-dependent first-wins would wrongly pick it if scanned.
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "M/Movie.mp4", Size: 9_000_000_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "M/Movie.mkv", Size: 5_000_000_000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "M/Movie.en.srt", Size: 50_000},
+	}
+	got := f.Apply(records)
+	paths := map[string]bool{}
+	for _, r := range got {
+		paths[r.Path] = true
+	}
+	if !paths["M/Movie.mkv"] {
+		t.Fatal("expected mkv primary")
+	}
+	if paths["M/Movie.mp4"] {
+		t.Error("mp4 should fail file_regex")
+	}
+	if !paths["M/Movie.en.srt"] {
+		t.Error("srt must attach to kept mkv, not be stolen by regex-failed mp4")
+	}
+}
+
+// Equal stem length: prefer the kept primary over a smaller same-stem copy.
+func TestApplyFilter_SidecarEqualStemPrefersKept(t *testing.T) {
+	f, err := NewFilter("/movies", "", "", `.*\.mkv$`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WithSidecarExtensions([]string{"srt"})
+	// Smaller path first alphabetically-ish; largest_file_only keeps the larger.
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Pack/B/Movie.mkv", Size: 100},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Pack/A/Movie.mkv", Size: 5000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Pack/Movie.en.srt", Size: 10},
+	}
+	// Note: sidecar path stem is Movie; both videos stem Movie.
+	// Put srt at Pack/ root with basename Movie.en.srt
+	records[2].Path = "Pack/A/Movie.en.srt"
+	got := f.Apply(records)
+	paths := map[string]bool{}
+	for _, r := range got {
+		paths[r.Path] = true
+	}
+	if !paths["Pack/A/Movie.mkv"] {
+		t.Fatal("expected larger A/Movie.mkv kept")
+	}
+	if paths["Pack/B/Movie.mkv"] {
+		t.Error("smaller B copy should drop")
+	}
+	if !paths["Pack/A/Movie.en.srt"] {
+		t.Error("srt must attach to kept A copy on equal stem length")
+	}
+}
+
+func TestApplyFilter_SidecarPathSegmentExclude(t *testing.T) {
+	f, err := NewFilter("/movies", "", "", `.*\.mkv$`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err = f.WithPathSegmentExclude(`(?i)^(extras|sample|samples)$`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WithSidecarExtensions([]string{"srt"})
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/Movie.mkv", Size: 5000},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/Movie.en.srt", Size: 50},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/Extras/bonus.mkv", Size: 200},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "Movie/Extras/bonus.en.srt", Size: 10},
+	}
+	got := f.Apply(records)
+	paths := map[string]bool{}
+	for _, r := range got {
+		paths[r.Path] = true
+	}
+	if !paths["Movie/Movie.mkv"] || !paths["Movie/Movie.en.srt"] {
+		t.Errorf("expected main + srt, got %v", paths)
+	}
+	if paths["Movie/Extras/bonus.mkv"] || paths["Movie/Extras/bonus.en.srt"] {
+		t.Errorf("extras path should be excluded for both video and sidecar, got %v", paths)
+	}
+}
+
+func TestApplyFilter_SidecarsSkipMaxSize(t *testing.T) {
+	f, err := NewFilter("/movies", "", "", `.*\.mkv$`, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cap primaries at 1GB; large external audio-like sidecar should still attach.
+	f.WithSizeBounds(0, 1024*1024*1024)
+	f.WithSidecarExtensions([]string{"srt", "mka"})
+	records := []metadata.FileRecord{
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "M/Movie.mkv", Size: 500 * 1024 * 1024},
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "M/Movie.en.srt", Size: 80_000},
+		// Huge companion over max_file_size — still a sidecar, must not drop.
+		{ItemID: 1, Source: metadata.SourceTorrent, Path: "M/Movie.en.mka", Size: 2 * 1024 * 1024 * 1024},
+		// Oversized primary drops.
+		{ItemID: 2, Source: metadata.SourceTorrent, Path: "Big/Big.mkv", Size: 5 * 1024 * 1024 * 1024},
+		{ItemID: 2, Source: metadata.SourceTorrent, Path: "Big/Big.en.srt", Size: 10},
+	}
+	got := f.Apply(records)
+	paths := map[string]bool{}
+	for _, r := range got {
+		paths[r.Path] = true
+	}
+	if !paths["M/Movie.mkv"] || !paths["M/Movie.en.srt"] || !paths["M/Movie.en.mka"] {
+		t.Errorf("expected movie + srt + mka, got %v", paths)
+	}
+	if paths["Big/Big.mkv"] || paths["Big/Big.en.srt"] {
+		t.Errorf("oversized primary item should drop (and its sub with it), got %v", paths)
 	}
 }
 
