@@ -289,6 +289,23 @@
         </form>
       </td>
     </tr>
+    <tr>
+      <td colspan="2" style="padding: 0.75rem 1rem; font-size: 0.8rem; color: #94a3b8;">
+        Fetch a single TorBox item by dashboard id (no full library prune). Use when a download is ready and you do not want to wait for the next interval sync.
+      </td>
+    </tr>
+    <tr class="actions">
+      <td colspan="2">
+        <form method="post" action="/actions/sync-item" id="sync-item-form" style="display:inline-flex; flex-wrap:wrap; gap:0.5rem; align-items:center; justify-content:center;">
+          <select name="source" class="btn" style="cursor:pointer; padding: 0.45rem 0.6rem;" title="TorBox source type">
+            <option value="torrent">Torrent</option>
+            <option value="usenet">Usenet</option>
+          </select>
+          <input type="number" name="id" min="1" step="1" required placeholder="Item ID" class="btn" style="width: 9rem; cursor:text; color:#e2e8f0;" title="TorBox item id from the dashboard" />
+          <input type="submit" value="Fetch item" class="btn" />
+        </form>
+      </td>
+    </tr>
   </table>
 
   <table id="stats-table" style="display:none">

@@ -85,6 +85,7 @@ func TestRouteTable(t *testing.T) {
 		{"actions resync no config", http.MethodPost, "/actions/resync", 500},
 		{"actions restart-sync no config", http.MethodPost, "/actions/restart-sync", 500},
 		{"actions loglevel missing param", http.MethodPost, "/actions/loglevel", 400},
+		{"actions sync-item no config", http.MethodPost, "/actions/sync-item", 500},
 		{"actions unknown", http.MethodPost, "/actions/unknown", 404},
 
 		// Method not allowed on actions (GET has no handler)
@@ -220,11 +221,11 @@ func TestCSRFProtection(t *testing.T) {
 	srv := testServer(t)
 
 	tests := []struct {
-		name  string
+		name   string
 		method string
-		path  string
-		token string
-		want  int
+		path   string
+		token  string
+		want   int
 	}{
 		{"missing token", http.MethodPost, "/actions/resync", "", 403},
 		{"invalid token", http.MethodPost, "/actions/restart-sync", "bad-token", 403},

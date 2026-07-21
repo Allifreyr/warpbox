@@ -24,21 +24,21 @@ import (
 
 // UserInfo represents the TorBox account details from GET /api/user/me.
 type UserInfo struct {
-	ID              int64   `json:"id"`
-	AuthID          string  `json:"auth_id"`
-	Email           string  `json:"email"`
-	Plan            int     `json:"plan"`
-	PlanName        string  `json:"plan_name"`
-	Premium         bool    `json:"premium"`
-	PremiumExpires  *string `json:"premium_expires,omitempty"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
-	ReferralCode    string  `json:"referral_code"`
-	Registered     bool    `json:"registered"`
-	PremiumDownloadLimit int64 `json:"premium_download_limit"`
-	TotalDownloaded int64  `json:"total_downloaded"`
-	TotalEgressed   int64  `json:"total_egressed"`
-	OverallRatio    float64 `json:"overall_ratio"`
+	ID                   int64   `json:"id"`
+	AuthID               string  `json:"auth_id"`
+	Email                string  `json:"email"`
+	Plan                 int     `json:"plan"`
+	PlanName             string  `json:"plan_name"`
+	Premium              bool    `json:"premium"`
+	PremiumExpires       *string `json:"premium_expires,omitempty"`
+	CreatedAt            string  `json:"created_at"`
+	UpdatedAt            string  `json:"updated_at"`
+	ReferralCode         string  `json:"referral_code"`
+	Registered           bool    `json:"registered"`
+	PremiumDownloadLimit int64   `json:"premium_download_limit"`
+	TotalDownloaded      int64   `json:"total_downloaded"`
+	TotalEgressed        int64   `json:"total_egressed"`
+	OverallRatio         float64 `json:"overall_ratio"`
 }
 
 // ---------------------------------------------------------------------------
@@ -47,9 +47,9 @@ type UserInfo struct {
 
 // Client communicates with the TorBox API.
 type Client struct {
-	baseURL       string
-	apiKey        string
-	httpClient    *http.Client
+	baseURL         string
+	apiKey          string
+	httpClient      *http.Client
 	HTTP429Callback func() // Called when a 429 response is received
 }
 
@@ -236,6 +236,104 @@ func (c *Client) ListTorrents(ctx context.Context, params ListFilesParams) ([]To
 // The API returns the same JSON structure as torrents, so we reuse Torrent.
 func (c *Client) ListUsenet(ctx context.Context, params ListFilesParams) ([]Torrent, error) {
 	return c.listGeneric(ctx, "/v1/api/usenet/mylist", "usenet", params)
+}
+
+// ErrNotFound is returned when mylist?id= reports that the item does not exist.
+var ErrNotFound = errors.New("torbox: item not found")
+
+// IsNotFound reports whether err indicates a missing TorBox item.
+func IsNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound)
+}
+
+// GetTorrent fetches a single torrent by id (mylist?id=).
+// Uses bypass_cache=true so a just-finished download is not stale for ~600s.
+// Returns ErrNotFound when TorBox responds 404 or ITEM_NOT_FOUND.
+func (c *Client) GetTorrent(ctx context.Context, id int64) (*Torrent, error) {
+	return c.getItemByID(ctx, "/v1/api/torrents/mylist", "torrent", id)
+}
+
+// GetUsenet fetches a single Usenet download by id (mylist?id=).
+// Uses bypass_cache=true. Returns ErrNotFound when the item is missing.
+func (c *Client) GetUsenet(ctx context.Context, id int64) (*Torrent, error) {
+	return c.getItemByID(ctx, "/v1/api/usenet/mylist", "usenet", id)
+}
+
+// getItemByID calls a mylist endpoint with id= and unmarshals a single object.
+func (c *Client) getItemByID(ctx context.Context, endpoint, label string, id int64) (*Torrent, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("torbox: invalid %s id %d", label, id)
+	}
+	base, err := url.Parse(c.baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("torbox: invalid base URL: %w", err)
+	}
+	u := base.JoinPath(endpoint)
+	q := u.Query()
+	q.Set("id", strconv.FormatInt(id, 10))
+	// Always bypass TorBox server-side cache for on-demand fetches.
+	q.Set("bypass_cache", "true")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("torbox: creating %s-by-id request: %w", label, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	slog.Debug("torbox get "+label+" by id", "id", id)
+
+	body, err := c.do(req)
+	if err != nil {
+		if strings.Contains(err.Error(), "unexpected status 404") {
+			return nil, fmt.Errorf("%w: %s id %d", ErrNotFound, label, id)
+		}
+		return nil, err
+	}
+
+	// Success envelope: data is a single torrent object (not a list).
+	var env apiResponse[Torrent]
+	if err := json.Unmarshal(body, &env); err != nil {
+		// Some TorBox versions may still return a one-element list; try that.
+		var listEnv apiResponse[[]Torrent]
+		if err2 := json.Unmarshal(body, &listEnv); err2 == nil {
+			if listEnv.Error != nil && *listEnv.Error != "" {
+				if strings.Contains(strings.ToUpper(*listEnv.Error), "NOT_FOUND") {
+					return nil, fmt.Errorf("%w: %s id %d", ErrNotFound, label, id)
+				}
+				return nil, fmt.Errorf("torbox %s-by-id API error: %s", label, *listEnv.Error)
+			}
+			if len(listEnv.Data) == 0 {
+				return nil, fmt.Errorf("%w: %s id %d", ErrNotFound, label, id)
+			}
+			t := listEnv.Data[0]
+			return &t, nil
+		}
+		if len(body) > 0 && body[0] == '<' {
+			snippet := body
+			if len(snippet) > 200 {
+				snippet = snippet[:200]
+			}
+			slog.Warn("torbox "+label+"-by-id: expected JSON, got non-JSON response",
+				"id", id, "body_preview", string(snippet))
+		}
+		return nil, fmt.Errorf("torbox: decoding %s-by-id response: %w", label, err)
+	}
+
+	if env.Error != nil && *env.Error != "" {
+		if strings.Contains(strings.ToUpper(*env.Error), "NOT_FOUND") {
+			return nil, fmt.Errorf("%w: %s id %d", ErrNotFound, label, id)
+		}
+		return nil, fmt.Errorf("torbox %s-by-id API error: %s", label, *env.Error)
+	}
+
+	// Zero-value id with empty name usually means null/empty data.
+	if env.Data.ID == 0 && env.Data.Name == "" && len(env.Data.Files) == 0 {
+		return nil, fmt.Errorf("%w: %s id %d", ErrNotFound, label, id)
+	}
+
+	t := env.Data
+	return &t, nil
 }
 
 // ---------------------------------------------------------------------------

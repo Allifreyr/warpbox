@@ -299,6 +299,84 @@ func TestIsCDNDisguisedErrorBody(t *testing.T) {
 	}
 }
 
+func TestIsCDNPermanentDataFailure(t *testing.T) {
+	cases := []struct {
+		status int
+		ct     string
+		want   bool
+	}{
+		{http.StatusNotFound, "text/html", true},
+		{http.StatusForbidden, "application/json", true},
+		{http.StatusTooManyRequests, "text/html", false}, // rate limit — hang
+		{http.StatusOK, "text/html", false},              // disguised 429-style — hang
+		{http.StatusOK, "video/mp4", false},
+		{http.StatusInternalServerError, "text/html", false}, // 5xx — hang
+		{http.StatusBadRequest, "text/html", true},
+	}
+	for _, tc := range cases {
+		got := isCDNPermanentDataFailure(tc.status, tc.ct)
+		if got != tc.want {
+			t.Errorf("status=%d ct=%q: got %v want %v", tc.status, tc.ct, got, tc.want)
+		}
+	}
+}
+
+// TestHandleGetCDNHang_Permanent404GivesUp verifies 404+html does not multi-minute poll.
+func TestHandleGetCDNHang_Permanent404GivesUp(t *testing.T) {
+	srv, w, cleanup := newTestCDNHangEnv(t, []cdnResponse{
+		{status: http.StatusNotFound, body: "not found", contentType: "text/html"},
+		// Must not be consumed — hang should exit after permanent failure.
+		{status: http.StatusOK, body: "should-not-stream", contentType: "video/x-matroska"},
+	})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/webdav/Test/test.mkv", nil)
+	req.Header.Set("Range", "bytes=0-499")
+
+	done := make(chan struct{})
+	go func() {
+		srv.handleGet(w, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handleGet did not exit promptly on CDN 404 (hang should fail-fast)")
+	}
+}
+
+func TestStreamFileContent_RejectsFileIDZero(t *testing.T) {
+	store, err := metadata.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpsertFile(metadata.FileRecord{
+		ItemID: 1, FileID: 0, Source: metadata.SourceTorrent,
+		Name: "output.jpg", Path: "output.jpg", Size: 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.GetFileByPath("output.jpg")
+	if err != nil || file == nil {
+		t.Fatalf("setup: %v file=%v", err, file)
+	}
+
+	srv := &Server{
+		store:         store,
+		negativeCache: make(map[string]*negativeCacheEntry),
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/webdav/output.jpg", nil)
+	req.Header.Set("Range", "bytes=0-99")
+	srv.streamFileContent(w, req, file)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
 func TestMarkAndWaitCDNDataCooldown(t *testing.T) {
 	s := &Server{
 		cdnDataCooldown: make(map[int64]time.Time),

@@ -49,10 +49,10 @@ func (s *Store) Ping(ctx context.Context) error {
 // ItemID and FileID together identify a file in the TorBox API
 // for CDN URL generation.
 type FileRecord struct {
-	ID           int64      `json:"id"`             // Internal auto-increment ID
-	ItemID       int64      `json:"item_id"`        // TorBox parent ID (torrent or usenet ID, for CDN URL)
-	FileID       int64      `json:"file_id"`        // TorBox file ID within parent (for CDN URL)
-	Source       FileSource `json:"source"`         // SourceTorrent or SourceUsenet
+	ID           int64      `json:"id"`      // Internal auto-increment ID
+	ItemID       int64      `json:"item_id"` // TorBox parent ID (torrent or usenet ID, for CDN URL)
+	FileID       int64      `json:"file_id"` // TorBox file ID within parent (for CDN URL)
+	Source       FileSource `json:"source"`  // SourceTorrent or SourceUsenet
 	Name         string     `json:"name"`
 	Path         string     `json:"path"`
 	Size         int64      `json:"size"`
@@ -60,7 +60,7 @@ type FileRecord struct {
 	CreatedAt    string     `json:"created_at,omitempty"` // From TorBox API item.created_at
 	CDNURL       string     `json:"cdn_url,omitempty"`
 	CDNURLExpiry string     `json:"cdn_url_expires,omitempty"`
-	SyncTag      int64      `json:"sync_tag,omitempty"`   // Sync batch tag for prune; 0 = unsynced
+	SyncTag      int64      `json:"sync_tag,omitempty"`    // Sync batch tag for prune; 0 = unsynced
 	FilterTags   string     `json:"filter_tags,omitempty"` // Space-joined override tags from TorBox dashboard
 }
 
@@ -486,6 +486,23 @@ func (s *Store) GetItemIDByFileID(source FileSource, fileID int64) (int64, error
 		return 0, fmt.Errorf("querying item_id: %w", err)
 	}
 	return tid, nil
+}
+
+// GetCurrentSyncTag returns the current sync batch tag without incrementing.
+// Returns 0 if the counter row has never been created (no full sync yet).
+// Used by single-item upsert so new rows share the latest full-sync tag and
+// are not pruned as stale on the next full cycle — without advancing the
+// counter (which would break prune semantics).
+func (s *Store) GetCurrentSyncTag() (int64, error) {
+	var tag int64
+	err := s.db.QueryRow(`SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'sync_tag'`).Scan(&tag)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reading sync tag: %w", err)
+	}
+	return tag, nil
 }
 
 // GetNextSyncTag returns the next sync batch tag value and atomically

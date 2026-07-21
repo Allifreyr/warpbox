@@ -503,3 +503,164 @@ func TestBuildFileRecord_ForcedAnimeOnlyIfAllowlisted(t *testing.T) {
 		t.Errorf("FilterTags = %q, want forcedanime", rec.FilterTags)
 	}
 }
+
+func TestSyncItem_upsertsWithoutPruningOthers(t *testing.T) {
+	// Pre-seed an unrelated file, then SyncItem for another id — both must remain.
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if _, err := store.GetNextSyncTag(); err != nil { // set current tag to 1
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 1, Source: SourceTorrent,
+		Name: "keep.mkv", Path: "KeepDir/keep.mkv", Size: 10, SyncTag: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("id") != "42" {
+			t.Errorf("unexpected id %q", r.URL.Query().Get("id"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"success": true,
+			"data": {
+				"id": 42,
+				"name": "New Movie",
+				"download_state": "cached",
+				"download_present": true,
+				"created_at": "2026-01-01T00:00:00Z",
+				"files": [{
+					"id": 7,
+					"name": "movie.mkv",
+					"size": 100,
+					"s3_path": "hash/New.Movie/movie.mkv",
+					"short_name": "movie.mkv",
+					"mimetype": "video/x-matroska"
+				}]
+			}
+		}`))
+	}))
+	defer ts.Close()
+
+	client := torbox.NewClient("key")
+	client.SetBaseURL(ts.URL)
+	client.SetHTTPClient(&http.Client{})
+	queue := throttle.NewQueue(99999)
+	qCtx, qCancel := context.WithCancel(context.Background())
+	defer qCancel()
+	queue.Start(qCtx)
+
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 0, time.Second, nil)
+	res, err := sw.SyncItem(context.Background(), SourceTorrent, 42)
+	if err != nil {
+		t.Fatalf("SyncItem: %v", err)
+	}
+	if !res.Ready || res.FilesUpserted != 1 {
+		t.Fatalf("result = %+v", res)
+	}
+
+	// Other item still present (no prune).
+	keep, err := store.GetFileByPath("KeepDir/keep.mkv")
+	if err != nil || keep == nil {
+		t.Fatalf("keep file missing after SyncItem: err=%v keep=%v", err, keep)
+	}
+	got, err := store.GetFileByPath("New.Movie/movie.mkv")
+	if err != nil || got == nil {
+		t.Fatalf("new file missing: err=%v got=%v", err, got)
+	}
+	if got.ItemID != 42 {
+		t.Errorf("item_id = %d", got.ItemID)
+	}
+	// Must use current full-sync tag (1), not leave 0 (prune would wipe it).
+	var tag int64
+	if err := store.db.QueryRow(`SELECT sync_tag FROM files WHERE item_id = 42`).Scan(&tag); err != nil {
+		t.Fatalf("query sync_tag: %v", err)
+	}
+	if tag != 1 {
+		t.Errorf("sync_tag = %d, want 1", tag)
+	}
+	// GetCurrentSyncTag must not have been advanced by SyncItem.
+	cur, err := store.GetCurrentSyncTag()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur != 1 {
+		t.Errorf("current sync tag advanced to %d, want 1", cur)
+	}
+	n, err := store.CountFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("file count = %d, want 2 (no prune)", n)
+	}
+}
+
+func TestSyncItem_notReady(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{
+			"success": true,
+			"data": {
+				"id": 5,
+				"name": "Downloading",
+				"download_state": "downloading",
+				"download_present": false,
+				"files": [{"id": 1, "name": "x.mkv", "size": 1, "s3_path": "h/x.mkv", "short_name": "x.mkv"}]
+			}
+		}`))
+	}))
+	defer ts.Close()
+
+	client := torbox.NewClient("key")
+	client.SetBaseURL(ts.URL)
+	client.SetHTTPClient(&http.Client{})
+	queue := throttle.NewQueue(99999)
+	qCtx, qCancel := context.WithCancel(context.Background())
+	defer qCancel()
+	queue.Start(qCtx)
+
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 0, time.Second, nil)
+	res, err := sw.SyncItem(context.Background(), SourceTorrent, 5)
+	if err != nil {
+		t.Fatalf("SyncItem: %v", err)
+	}
+	if res.Ready {
+		t.Fatal("expected Ready=false")
+	}
+	n, _ := store.CountFiles()
+	if n != 0 {
+		t.Errorf("expected no upserts when not ready, got %d files", n)
+	}
+}
+
+func TestSyncItem_invalidID(t *testing.T) {
+	sw := NewSyncWorker(nil, nil, nil, time.Hour, 5000, false, 0, time.Second, nil)
+	_, err := sw.SyncItem(context.Background(), SourceTorrent, 0)
+	if err == nil {
+		t.Fatal("expected error for id 0")
+	}
+}
+
+func TestUsableTorBoxFile(t *testing.T) {
+	if usableTorBoxFile(torbox.TorrentFile{ID: 0, ShortName: "output.jpg"}) {
+		t.Error("file_id 0 should be unusable")
+	}
+	if usableTorBoxFile(torbox.TorrentFile{ID: -1}) {
+		t.Error("negative file_id should be unusable")
+	}
+	if !usableTorBoxFile(torbox.TorrentFile{ID: 1, ShortName: "movie.mkv"}) {
+		t.Error("positive file_id should be usable")
+	}
+}

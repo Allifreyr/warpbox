@@ -7,6 +7,7 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"runtime"
 	"strings"
@@ -20,26 +21,39 @@ import (
 
 // SyncWorker periodically synchronises the TorBox file listing into SQLite.
 type SyncWorker struct {
-	store          *Store
-	client         *torbox.Client
-	queue          *throttle.Queue
-	interval       time.Duration
-	listPageSize   int
-	bypassCache    bool
-	retryAttempts  int
-	retryBackoff   time.Duration
+	store         *Store
+	client        *torbox.Client
+	queue         *throttle.Queue
+	interval      time.Duration
+	listPageSize  int
+	bypassCache   bool
+	retryAttempts int
+	retryBackoff  time.Duration
 	overrideTags  map[string]bool // Tags that participate in filter matching
-	lastError      error
-	lastSuccess    time.Time
+	lastError     error
+	lastSuccess   time.Time
 
 	// Hooks for library change detection.
 	OnItemsAdded   func(itemNames []string)
 	OnItemsRemoved func(itemNames []string)
 
-	mu        sync.Mutex
+	mu sync.Mutex
+	// syncMu serializes full sync and single-item sync so prune cannot race
+	// with an in-flight item upsert (which would drop the new rows).
+	syncMu    sync.Mutex
 	parentCtx context.Context
 	cancel    context.CancelFunc
 	loopDone  chan struct{}
+}
+
+// SyncItemResult is the outcome of SyncItem (never prunes other library rows).
+type SyncItemResult struct {
+	ItemID        int64
+	ItemName      string
+	Source        FileSource
+	FilesUpserted int
+	Ready         bool   // false if download not present / not cached yet
+	Message       string // human-readable status for UI/integrations
 }
 
 // SyncStatus describes the state of the most recent metadata sync.
@@ -69,14 +83,14 @@ func NewSyncWorker(store *Store, client *torbox.Client, queue *throttle.Queue, i
 		tagSet[strings.ToLower(strings.TrimSpace(t))] = true
 	}
 	return &SyncWorker{
-		store:          store,
-		client:         client,
-		queue:          queue,
-		interval:       interval,
-		listPageSize:   listPageSize,
-		bypassCache:    bypassCache,
-		retryAttempts:  retryAttempts,
-		retryBackoff:   retryBackoff,
+		store:         store,
+		client:        client,
+		queue:         queue,
+		interval:      interval,
+		listPageSize:  listPageSize,
+		bypassCache:   bypassCache,
+		retryAttempts: retryAttempts,
+		retryBackoff:  retryBackoff,
 		overrideTags:  tagSet,
 	}
 }
@@ -170,6 +184,134 @@ func (w *SyncWorker) SyncNow() {
 	w.syncOnce(ctx)
 }
 
+// SyncItem fetches one TorBox torrent or Usenet item by id and upserts its
+// files into SQLite. It never prunes and never advances the global sync tag.
+// Safe for landing-page / integration calls; serialized with full sync.
+func (w *SyncWorker) SyncItem(ctx context.Context, source FileSource, itemID int64) (SyncItemResult, error) {
+	if itemID <= 0 {
+		return SyncItemResult{}, fmt.Errorf("item id must be positive")
+	}
+	if source != SourceTorrent && source != SourceUsenet {
+		return SyncItemResult{}, fmt.Errorf("unsupported source %d (use torrent or usenet)", source)
+	}
+
+	w.syncMu.Lock()
+	defer w.syncMu.Unlock()
+
+	result := SyncItemResult{ItemID: itemID, Source: source}
+
+	// Snapshot whether this item already exists (for OnItemsAdded).
+	var existed bool
+	if w.OnItemsAdded != nil {
+		dirs, err := w.store.ListItemDirs()
+		if err != nil {
+			slog.Warn("sync item: failed to list items for change detection", "error", err)
+		} else {
+			for _, d := range dirs {
+				if d.ItemID == itemID && d.Source == source {
+					existed = true
+					break
+				}
+			}
+		}
+	}
+
+	type fetchResult struct {
+		item *torbox.Torrent
+		err  error
+	}
+	ch := make(chan fetchResult, 1)
+
+	label := "sync item: GetTorrent"
+	if source == SourceUsenet {
+		label = "sync item: GetUsenet"
+	}
+
+	w.queue.Enqueue(throttle.Request{
+		Label: label,
+		Execute: func(ctx context.Context) error {
+			var item *torbox.Torrent
+			var err error
+			if source == SourceTorrent {
+				item, err = w.client.GetTorrent(ctx, itemID)
+			} else {
+				item, err = w.client.GetUsenet(ctx, itemID)
+			}
+			ch <- fetchResult{item, err}
+			return err
+		},
+	})
+
+	fr := <-ch
+	if fr.err != nil {
+		return result, fr.err
+	}
+	item := fr.item
+	if item == nil {
+		return result, torbox.ErrNotFound
+	}
+
+	result.ItemName = item.Name
+	// Same readiness gate as full sync.
+	if item.DownloadState != "cached" && !item.DownloadPresent {
+		result.Ready = false
+		result.Message = fmt.Sprintf("item %d (%q) is not ready yet (state=%s, download_present=%v)",
+			itemID, item.Name, item.DownloadState, item.DownloadPresent)
+		slog.Info("sync item: not ready", "source", source, "id", itemID, "state", item.DownloadState)
+		return result, nil
+	}
+	if len(item.Files) == 0 {
+		result.Ready = false
+		result.Message = fmt.Sprintf("item %d (%q) has no files yet", itemID, item.Name)
+		slog.Info("sync item: no files", "source", source, "id", itemID)
+		return result, nil
+	}
+
+	// Reuse current full-sync tag; never increment and never prune.
+	syncTag, err := w.store.GetCurrentSyncTag()
+	if err != nil {
+		return result, fmt.Errorf("reading current sync tag: %w", err)
+	}
+
+	var count int
+	for _, f := range item.Files {
+		if !usableTorBoxFile(f) {
+			slog.Debug("sync item: skipping unusable file", "item_id", itemID, "file_id", f.ID, "name", f.ShortName)
+			continue
+		}
+		rec := buildFileRecord(item.ID, f, syncTag, source, item.CreatedAt, item.Tags, w.overrideTags, item.Name)
+		if err := w.store.UpsertFile(rec); err != nil {
+			slog.Error("sync item: upsert failed",
+				"file_id", f.ID, "path", rec.Path, "error", err)
+			continue
+		}
+		count++
+	}
+	result.FilesUpserted = count
+	result.Ready = true
+	result.Message = fmt.Sprintf("synced item %d (%q): %d file(s)", itemID, item.Name, count)
+
+	slog.Info("sync item complete",
+		"source", source, "id", itemID, "name", item.Name, "files", count, "sync_tag", syncTag)
+
+	// Fire OnItemsAdded only when this is a newly seen item.
+	if !existed && w.OnItemsAdded != nil && count > 0 {
+		dirs, err := w.store.ListItemDirs()
+		if err != nil {
+			slog.Warn("sync item: failed to list items after upsert", "error", err)
+		} else {
+			for _, d := range dirs {
+				if d.ItemID == itemID && d.Source == source {
+					w.OnItemsAdded([]string{d.Dir})
+					break
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
 // sanitizePathSegment removes characters that are invalid or problematic in
 // filesystem paths across Windows and Linux: \ / : * ? " < > | and &.
 // These are replaced with an underscore. The function preserves valid Unicode
@@ -240,6 +382,13 @@ func errorString(err error) string {
 
 // syncOnce performs a single sync cycle through the throttle queue.
 func (w *SyncWorker) syncOnce(ctx context.Context) {
+	w.syncMu.Lock()
+	defer w.syncMu.Unlock()
+	w.syncOnceLocked(ctx)
+}
+
+// syncOnceLocked is the full sync body; caller must hold syncMu.
+func (w *SyncWorker) syncOnceLocked(ctx context.Context) {
 	slog.Debug("metadata sync: starting")
 
 	// Snapshot current items for change detection.
@@ -287,11 +436,11 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 					case <-time.After(w.retryBackoff * time.Duration(1<<(attempt-1))):
 					}
 				}
-			torrents, err = w.client.ListTorrents(ctx, torbox.ListFilesParams{
-				BypassCache: w.bypassCache,
-				Offset:      0,
-				PageSize:    w.listPageSize,
-			})
+				torrents, err = w.client.ListTorrents(ctx, torbox.ListFilesParams{
+					BypassCache: w.bypassCache,
+					Offset:      0,
+					PageSize:    w.listPageSize,
+				})
 				if err == nil || !torbox.IsRetryable(err) {
 					break
 				}
@@ -320,11 +469,11 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 					case <-time.After(w.retryBackoff * time.Duration(1<<(attempt-1))):
 					}
 				}
-			usenet, err = w.client.ListUsenet(ctx, torbox.ListFilesParams{
-				BypassCache: w.bypassCache,
-				Offset:      0,
-				PageSize:    w.listPageSize,
-			})
+				usenet, err = w.client.ListUsenet(ctx, torbox.ListFilesParams{
+					BypassCache: w.bypassCache,
+					Offset:      0,
+					PageSize:    w.listPageSize,
+				})
 				if err == nil || !torbox.IsRetryable(err) {
 					break
 				}
@@ -369,6 +518,10 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 		}
 
 		for _, f := range t.Files {
+			if !usableTorBoxFile(f) {
+				slog.Debug("metadata sync: skipping unusable file", "item_id", t.ID, "file_id", f.ID, "name", f.ShortName)
+				continue
+			}
 			rec := buildFileRecord(t.ID, f, syncTag, SourceTorrent, t.CreatedAt, t.Tags, w.overrideTags, t.Name)
 			if err := w.store.UpsertFile(rec); err != nil {
 				slog.Error("metadata sync: upsert failed",
@@ -393,6 +546,10 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 		}
 
 		for _, f := range u.Files {
+			if !usableTorBoxFile(f) {
+				slog.Debug("metadata sync: skipping unusable file", "item_id", u.ID, "file_id", f.ID, "name", f.ShortName)
+				continue
+			}
 			rec := buildFileRecord(u.ID, f, syncTag, SourceUsenet, u.CreatedAt, u.Tags, w.overrideTags, u.Name)
 			if err := w.store.UpsertFile(rec); err != nil {
 				slog.Error("metadata sync: upsert failed",
@@ -454,6 +611,13 @@ func (w *SyncWorker) syncOnce(ctx context.Context) {
 	}
 
 	slog.Debug("metadata sync complete", "files_synced", count)
+}
+
+// usableTorBoxFile reports whether a TorBox file entry is safe to store and
+// stream. file_id must be positive; 0/negative are invalid for requestdl and
+// produce endless CDN 404 hang loops (e.g. junk single-file "output.jpg").
+func usableTorBoxFile(f torbox.TorrentFile) bool {
+	return f.ID > 0
 }
 
 // buildFileRecord creates a FileRecord from a TorBox item and file.

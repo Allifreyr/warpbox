@@ -11,9 +11,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	_ "net/http/pprof"
 	"log/slog"
 	"net/http"
+	_ "net/http/pprof"
 	"runtime"
 	"sort"
 	"strings"
@@ -98,8 +98,8 @@ type Server struct {
 	prevNumGC           uint32
 
 	// Library virtual path filters and lookup map.
-	virtualFilters   []*library.Filter
-	virtualPathMap   map[string]*library.Filter // name → filter for O(1) lookup
+	virtualFilters []*library.Filter
+	virtualPathMap map[string]*library.Filter // name → filter for O(1) lookup
 
 	// TorBox user info (refreshed periodically).
 	torboxUserInfo   *torbox.UserInfo
@@ -114,16 +114,16 @@ const webdavRoot = "/webdav"
 
 // Config holds the server-specific configuration.
 type Config struct {
-	ListenAddr         string
-	CDNTtlMinutes       int  // How long to cache CDN URLs (0 = disable)
-	CDNURLAutoRepair    bool // Auto-repair stale CDN URLs
-	CDNURLRepairRetries int  // Max repair retries per request
-	Version            string // Build version
-	RequestsPerMinute  int    // For landing page display
-	LogFormat          string // For landing page display
-	LogLevel           string // For landing page display
-	SyncIntervalMinute int    // For landing page display
-	SyncListPageSize   int    // For landing page display
+	ListenAddr          string
+	CDNTtlMinutes       int    // How long to cache CDN URLs (0 = disable)
+	CDNURLAutoRepair    bool   // Auto-repair stale CDN URLs
+	CDNURLRepairRetries int    // Max repair retries per request
+	Version             string // Build version
+	RequestsPerMinute   int    // For landing page display
+	LogFormat           string // For landing page display
+	LogLevel            string // For landing page display
+	SyncIntervalMinute  int    // For landing page display
+	SyncListPageSize    int    // For landing page display
 
 	// Pprof control.
 	EnablePprof bool // Enable /debug/pprof/ endpoints; default false
@@ -194,18 +194,18 @@ func New(cfg Config, store *metadata.Store, torBox *torbox.Client, queue *thrott
 		startTime: time.Now(),
 		csrfToken: csrfToken,
 
-		negativeCache:          make(map[string]*negativeCacheEntry),
-		torrentFailures:        make(map[int64]*torrentFailureTracker),
-		cdnDataCooldown:         make(map[int64]time.Time),
-		cleanupStopCh:          make(chan struct{}),
-		cdnSem:                 make(chan struct{}, maxConns),
+		negativeCache:            make(map[string]*negativeCacheEntry),
+		torrentFailures:          make(map[int64]*torrentFailureTracker),
+		cdnDataCooldown:          make(map[int64]time.Time),
+		cleanupStopCh:            make(chan struct{}),
+		cdnSem:                   make(chan struct{}, maxConns),
 		negativeCacheMaxEntries:  cfg.NegativeCacheMaxEntries,
 		circuitBreakerMaxEntries: cfg.CircuitBreakerMaxEntries,
-		configPath:             cfg.ConfigPath,
-		statsRetention:          time.Duration(cfg.StatsRetentionHours) * time.Hour,
-		statsChartSince:         time.Duration(cfg.StatsChartMinutes) * time.Minute,
-		virtualFilters:          virtualFilters,
-		virtualPathMap:          makeVirtualPathMap(virtualFilters),
+		configPath:               cfg.ConfigPath,
+		statsRetention:           time.Duration(cfg.StatsRetentionHours) * time.Hour,
+		statsChartSince:          time.Duration(cfg.StatsChartMinutes) * time.Minute,
+		virtualFilters:           virtualFilters,
+		virtualPathMap:           makeVirtualPathMap(virtualFilters),
 	}
 	// Fill the semaphore so we can Acquire/Release.
 	for i := 0; i < maxConns; i++ {
@@ -762,6 +762,42 @@ func (s *Server) registerRoutes() {
 				},
 			},
 		))
+
+		r.Method("POST", "/sync-item", openapi.Annotated(
+			http.HandlerFunc(s.handleSyncItem),
+			openapi.Operation{
+				Summary: "Fetch single TorBox item into library",
+				Description: "Fetches one torrent or usenet item by TorBox dashboard id and upserts its files into the local metadata store. " +
+					"Does not prune other items. Safe for on-demand use and external integrations. " +
+					"Returns 200 when the item is not ready yet (caller may retry).",
+				Tags: []string{"Management"},
+				RequestBody: &openapi.RequestBody{
+					Required: true,
+					Content: openapi.FormContent(openapi.Schema{
+						Type: "object",
+						Properties: map[string]*openapi.Schema{
+							"source": {
+								Type:    "string",
+								Enum:    []string{"torrent", "usenet"},
+								Example: "torrent",
+							},
+							"id": {
+								Type:    "string",
+								Example: "123456",
+							},
+						},
+						Required: []string{"source", "id"},
+					}),
+				},
+				Responses: map[string]openapi.Response{
+					"200": {Description: "Item synced or not ready yet (see body)"},
+					"400": {Description: "Missing or invalid parameters"},
+					"404": {Description: "Item not found on TorBox"},
+					"502": {Description: "TorBox API or sync error"},
+					"500": {Description: "Sync item handler not configured"},
+				},
+			},
+		))
 	})
 
 	// pprof endpoints (conditional).
@@ -857,4 +893,3 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	return nil
 }
-

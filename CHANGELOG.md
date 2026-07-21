@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.4-v0.7.0] - 2026-07-21
+
+### Added
+- On-demand single-item library fetch: `POST /actions/sync-item` with `source=torrent|usenet` and `id=<TorBox dashboard id>`. Upserts that item’s files into SQLite without pruning the rest of the library. Landing page **Actions → Fetch item** (source + id). Useful when a download is ready and you do not want to wait for the next interval sync; same endpoint is available for scripts/integrations. Does not prune other items. Serialized with full sync via a mutex.
+
 ### Fixed
-- Docker images: canonical (`vX.Y.Z`) and `latest` tags now use a multi-arch manifest (linux/amd64 + linux/arm64) via `docker buildx imagetools create`, instead of retagging only the amd64 image (ported from upstream v0.7.4).
+- Docker images: canonical (`vX.Y.Z`) and `latest` tags are multi-arch manifests (linux/amd64 + linux/arm64) via `docker buildx imagetools create`, instead of retagging only the amd64 image (ported from upstream v0.7.4). Per-arch tags (`-amd64` / `-arm64`) remain available.
+- Skip TorBox files with `file_id <= 0` during full sync and single-item fetch (invalid for CDN `requestdl`; often junk such as a root-level `output.jpg`). Stale rows drop on the next full-sync prune; GET returns 404 immediately for `file_id <= 0` without hang/poll.
+- CDN hang/poll no longer multi-minute retries on **permanent** data failures (HTTP 404/403, including HTML error bodies). Transient 429/5xx and 200+text disguised rate-limits still hang as before.
 
 ### Changed
-- Docker Compose / README Quick Start: mount a named `warpbox_data` volume at `/data` (config + SQLite) instead of a host bind of only `config.yml`. Persists the metadata DB across container recreation and allows first-run config generation. Documented `docker exec` edit path and optional host `./data:/data` bind. (aligned with upstream)
+- Docker Compose / README Quick Start: named volume `warpbox_data` at `/data` (config + SQLite) instead of binding only `./config.yml`. Persists the metadata DB across container recreation and allows first-run config generation. Documented `docker exec` edit path and optional host `./data:/data` bind. (aligned with upstream)
 
 ## [v0.7.3-v0.6.0] - 2026-07-19
 
@@ -192,8 +199,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.3-v0.6.0...HEAD
-[v0.7.3-v0.6.0]: /compare/v0.7.2-v0.5.1...v0.7.1-v0.6.0
+[Unreleased]: /compare/v0.7.4-v0.7.0...HEAD
+[v0.7.4-v0.7.0]: /compare/v0.7.3-v0.6.0...v0.7.4-v0.7.0
+[v0.7.3-v0.6.0]: /compare/v0.7.2-v0.5.1...v0.7.3-v0.6.0
 [v0.7.2-v0.5.1]: /compare/v0.7.1-v0.5.0...v0.7.2-v0.5.1
 [v0.7.1-v0.5.0]: /compare/v0.7.1-v0.4.0...v0.7.1-v0.5.0
 [v0.7.1-v0.4.0]: /compare/v0.7.1-v0.3.2...v0.7.1-v0.4.0

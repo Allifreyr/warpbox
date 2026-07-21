@@ -32,10 +32,10 @@ func TestListFilesSuccess(t *testing.T) {
 		resp := apiResponse[[]Torrent]{
 			Data: []Torrent{
 				{
-					ID:   1,
-					Name: "Test Torrent",
-					Hash: "abc123",
-					Size: 1000,
+					ID:            1,
+					Name:          "Test Torrent",
+					Hash:          "abc123",
+					Size:          1000,
 					DownloadState: "cached",
 					Files: []TorrentFile{
 						{ID: 10, Name: "movie.mkv", Size: 500, MimeType: "video/x-matroska"},
@@ -437,5 +437,85 @@ func TestListPaginatesPastCap(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("expected 2 page requests, got %d", calls)
+	}
+}
+
+func TestGetTorrentByID_success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/api/torrents/mylist" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("id") != "99" {
+			t.Errorf("id = %q, want 99", r.URL.Query().Get("id"))
+		}
+		if r.URL.Query().Get("bypass_cache") != "true" {
+			t.Errorf("bypass_cache = %q, want true", r.URL.Query().Get("bypass_cache"))
+		}
+		resp := apiResponse[Torrent]{
+			Data: Torrent{
+				ID: 99, Name: "One Item", Hash: "h", Size: 100,
+				DownloadState:   "cached",
+				DownloadPresent: true,
+				Files: []TorrentFile{
+					{ID: 1, Name: "a.mkv", Size: 100, S3Path: "h/a.mkv", ShortName: "a.mkv"},
+				},
+			},
+			Success: boolPtr(true),
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "key")
+	item, err := client.GetTorrent(context.Background(), 99)
+	if err != nil {
+		t.Fatalf("GetTorrent: %v", err)
+	}
+	if item.ID != 99 || item.Name != "One Item" {
+		t.Errorf("got id=%d name=%q", item.ID, item.Name)
+	}
+	if len(item.Files) != 1 {
+		t.Errorf("files = %d", len(item.Files))
+	}
+}
+
+func TestGetTorrentByID_notFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"success":false,"error":"ITEM_NOT_FOUND","data":null}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "key")
+	_, err := client.GetTorrent(context.Background(), 1)
+	if !IsNotFound(err) {
+		t.Fatalf("expected IsNotFound, got %v", err)
+	}
+}
+
+func TestGetUsenetByID_listFallback(t *testing.T) {
+	// Some responses may wrap a single item as a one-element list.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/api/usenet/mylist" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		resp := apiResponse[[]Torrent]{
+			Data: []Torrent{{
+				ID: 7, Name: "Usenet Item", DownloadState: "cached", DownloadPresent: true,
+				Files: []TorrentFile{{ID: 1, Name: "f.mkv", Size: 1, S3Path: "x/f.mkv", ShortName: "f.mkv"}},
+			}},
+			Success: boolPtr(true),
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "key")
+	item, err := client.GetUsenet(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetUsenet: %v", err)
+	}
+	if item.ID != 7 {
+		t.Errorf("id = %d", item.ID)
 	}
 }

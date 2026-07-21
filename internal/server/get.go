@@ -90,6 +90,14 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 // circuit breaker), byte-range requests, and streaming the response to the
 // client via a proxy from the CDN.
 func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file *metadata.FileRecord) {
+	// Invalid TorBox file ids never get a working CDN link — fail fast (no hang).
+	if file.FileID <= 0 {
+		slog.Warn("GET: refusing stream for unusable file_id",
+			"path", file.Path, "item_id", file.ItemID, "file_id", file.FileID)
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
 	// Get or refresh the CDN URL.
 	cdnURL, err := s.store.GetCDNURL(file.ID)
 	if err != nil {
@@ -346,6 +354,22 @@ func isCDNDisguisedErrorBody(contentType string) bool {
 // rather than fail the client immediately.
 func isCDNTransientStatus(code int) bool {
 	return code == http.StatusTooManyRequests || code >= 500
+}
+
+// isCDNPermanentDataFailure reports CDN data responses that will not recover
+// by re-fetching requestdl (missing object, forbidden). Hang must not
+// multi-minute poll these — that was the output.jpg / file_id=0 404 HTML
+// death spiral. 429/5xx and 200+text (disguised rate limit) stay retryable.
+func isCDNPermanentDataFailure(status int, contentType string) bool {
+	if status == http.StatusNotFound || status == http.StatusForbidden {
+		return true
+	}
+	// Other 4xx (not 429) with an HTML/text body are not transient rate limits.
+	if status >= 400 && status < 500 && status != http.StatusTooManyRequests &&
+		isCDNDisguisedErrorBody(contentType) {
+		return true
+	}
+	return false
 }
 
 // invalidateCDNURLCache clears any cached CDN URL for the file so hang/poll
@@ -780,11 +804,39 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			continue
 		}
 
+		status := proxyResp.StatusCode
+		ct := proxyResp.Header.Get("Content-Type")
+
+		// Permanent CDN miss (404/403, including HTML error pages). Headers
+		// already sent — end the stream; do not poll for minutes.
+		if isCDNPermanentDataFailure(status, ct) {
+			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
+			s.invalidateCDNURLCache(file)
+			key := cdnCacheKey(file.Source, file.ItemID, file.FileID)
+			ttl := time.Duration(s.cfg.NegativeCacheTTLSeconds) * time.Second
+			if ttl <= 0 {
+				ttl = 30 * time.Second
+			}
+			s.negativeCacheMu.Lock()
+			s.negativeCache[key] = &negativeCacheEntry{
+				err:       fmt.Errorf("CDN permanent failure status=%d", status),
+				expiresAt: time.Now().Add(ttl),
+			}
+			s.negativeCacheMu.Unlock()
+			slog.Warn("GET (hang): CDN permanent failure, giving up",
+				"path", file.Path,
+				"status", status,
+				"content_type", ct,
+				"source", file.Source,
+				"item_id", file.ItemID,
+				"file_id", file.FileID,
+			)
+			return
+		}
+
 		// Transient CDN data failure — do not stream error body; cool down and retry.
-		if isCDNTransientStatus(proxyResp.StatusCode) ||
-			isCDNDisguisedErrorBody(proxyResp.Header.Get("Content-Type")) {
-			status := proxyResp.StatusCode
-			ct := proxyResp.Header.Get("Content-Type")
+		if isCDNTransientStatus(status) || isCDNDisguisedErrorBody(ct) {
 			proxyResp.Body.Close()
 			s.ReleaseCDNConn()
 
@@ -806,12 +858,12 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			continue
 		}
 
-		if proxyResp.StatusCode != http.StatusOK && proxyResp.StatusCode != http.StatusPartialContent {
+		if status != http.StatusOK && status != http.StatusPartialContent {
 			proxyResp.Body.Close()
 			s.ReleaseCDNConn()
 			// Headers already sent; cannot change status. Log and end.
 			slog.Error("GET (hang): CDN returned non-success after recovery",
-				"path", file.Path, "status", proxyResp.StatusCode,
+				"path", file.Path, "status", status,
 			)
 			return
 		}

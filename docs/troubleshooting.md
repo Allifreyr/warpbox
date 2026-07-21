@@ -28,6 +28,26 @@ This page covers common problems, what they mean, and how to fix them.
 | Mount directory doesn't exist | Create it: `mkdir -p /mnt/warpbox` |
 | `URL Join failed` / `invalid URL escape "% …"` for some episodes | Filenames with a literal `%` (e.g. `30% Iron Chef`) require Warpbox to percent-encode WebDAV hrefs. Upgrade to a build that includes `encodeDAVHref` (hrefs show `%25` for `%`). |
 
+## New TorBox download not in Plex / mount yet
+
+**What you see:** You added a torrent on the TorBox dashboard, it is ready, but Warpbox / Plex still does not show it.
+
+| Cause | Fix |
+|-------|-----|
+| Waiting for interval sync | Default `sync.interval_minutes` is 5. Wait, click **Resync metadata** on the landing page, or use **Fetch item** (below). |
+| Need one item now | Open `http://<host>:1412/` → Actions → choose Torrent/Usenet, paste the TorBox **item id**, **Fetch item**. Or: `POST /actions/sync-item` with form fields `source=torrent` (or `usenet`) and `id=<id>` (same CSRF/auth as other actions). Does **not** wipe the rest of the library. |
+| Item still downloading | Fetch item returns “not ready” until TorBox has `download_present` / cached state. Retry when the dashboard shows ready. |
+| rclone dir cache | After Warpbox has the files, wait for rclone `--poll-interval` / `--dir-cache-time`, or refresh the mount. Confirm with the HTTP browser (`http://localhost:1412/http/tv/`) — that path bypasses rclone’s dir cache. |
+
+## Junk file at `__all__` root / open hangs forever
+
+**What you see:** Something like `output.jpg` at the root of `__all__`, open lags for minutes, logs show `CDN data still unavailable` with `status=404` and `content_type=text/html`, often `file_id=0`.
+
+| Cause | Fix |
+|-------|-----|
+| Invalid TorBox file entry (`file_id <= 0`) | v0.7.4+ skips these on sync and fails GET immediately. Run a full **Resync** (or wait for interval sync) to prune old rows. Delete the junk item on TorBox if it remains. |
+| CDN permanent 404 | File is listed in metadata but not available on TorBox CDN. Hang no longer multi-minute polls 404/403. Prefer **movies/tv** mounts with video `file_regex` so images never appear in Plex libraries. |
+
 ## Rate limit errors (429) still appearing
 
 **What you see:** `429 Too Many Requests` in logs, or TorBox emails about rate limiting.

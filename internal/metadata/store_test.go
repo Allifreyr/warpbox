@@ -95,12 +95,12 @@ func TestGetFileByPath(t *testing.T) {
 	defer s.Close()
 
 	s.UpsertFile(FileRecord{
-		ItemID:   1,
-		FileID:   10,
-		Source:   SourceTorrent,
-		Name:     "file.txt",
-		Path:     "/docs/file.txt",
-		Size:     100,
+		ItemID: 1,
+		FileID: 10,
+		Source: SourceTorrent,
+		Name:   "file.txt",
+		Path:   "/docs/file.txt",
+		Size:   100,
 	})
 
 	got, err := s.GetFileByPath("/docs/file.txt")
@@ -531,6 +531,44 @@ func TestListItemDirs_subSubDirectory(t *testing.T) {
 	}
 }
 
+func TestGetCurrentSyncTag_empty(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	tag, err := s.GetCurrentSyncTag()
+	if err != nil {
+		t.Fatalf("GetCurrentSyncTag failed: %v", err)
+	}
+	if tag != 0 {
+		t.Errorf("expected 0 before any full sync, got %d", tag)
+	}
+}
+
+func TestGetCurrentSyncTag_afterNext(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	n1, err := s.GetNextSyncTag()
+	if err != nil {
+		t.Fatalf("GetNextSyncTag failed: %v", err)
+	}
+	cur, err := s.GetCurrentSyncTag()
+	if err != nil {
+		t.Fatalf("GetCurrentSyncTag failed: %v", err)
+	}
+	if cur != n1 {
+		t.Errorf("GetCurrentSyncTag = %d, want %d (same as last GetNextSyncTag)", cur, n1)
+	}
+	// Current must not increment.
+	cur2, err := s.GetCurrentSyncTag()
+	if err != nil {
+		t.Fatalf("GetCurrentSyncTag (2) failed: %v", err)
+	}
+	if cur2 != cur {
+		t.Errorf("GetCurrentSyncTag mutated tag: %d -> %d", cur, cur2)
+	}
+}
+
 func TestPruneBySyncTag_removesNonMatching(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
@@ -901,4 +939,3 @@ func TestMigrateAutoRecreatesV2DB(t *testing.T) {
 		t.Errorf("user_version = %d, want 3", version)
 	}
 }
-
