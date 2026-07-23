@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Sync/GET no longer treat TorBox `file_id == 0` as junk. TorBox often assigns **id 0 to real media** (main feature / an episode) while extras use 1..N. The v0.7.0 “skip file_id ≤ 0” rule dropped those files from SQLite and blocked streaming — missing main movies and episodes vs older Warpbox. Only **negative** file ids are rejected; permanent CDN 404 hang fail-fast still covers true dead objects.
+
 ## [v0.7.4-v0.8.0] - 2026-07-21
 
 ### Added

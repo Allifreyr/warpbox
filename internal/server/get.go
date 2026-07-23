@@ -87,8 +87,9 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 // circuit breaker), byte-range requests, and streaming the response to the
 // client via a proxy from the CDN.
 func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file *metadata.FileRecord) {
-	// Invalid TorBox file ids never get a working CDN link — fail fast (no hang).
-	if file.FileID <= 0 {
+	// Negative TorBox file ids are not usable with requestdl. file_id 0 is valid
+	// (TorBox often uses 0 for a real file in multi-file torrents).
+	if file.FileID < 0 {
 		slog.Warn("GET: refusing stream for unusable file_id",
 			"path", file.Path, "item_id", file.ItemID, "file_id", file.FileID)
 		http.Error(w, "not found", http.StatusNotFound)

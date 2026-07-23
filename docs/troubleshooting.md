@@ -41,12 +41,20 @@ This page covers common problems, what they mean, and how to fix them.
 
 ## Junk file at `__all__` root / open hangs forever
 
-**What you see:** Something like `output.jpg` at the root of `__all__`, open lags for minutes, logs show `CDN data still unavailable` with `status=404` and `content_type=text/html`, often `file_id=0`.
+**What you see:** Something like `output.jpg` at the root of `__all__`, open lags, logs show `CDN data still unavailable` with `status=404` and `content_type=text/html`.
 
 | Cause | Fix |
 |-------|-----|
-| Invalid TorBox file entry (`file_id <= 0`) | v0.7.4+ skips these on sync and fails GET immediately. Run a full **Resync** (or wait for interval sync) to prune old rows. Delete the junk item on TorBox if it remains. |
-| CDN permanent 404 | File is listed in metadata but not available on TorBox CDN. Hang no longer multi-minute polls 404/403. Prefer **movies/tv** mounts with video `file_regex` so images never appear in Plex libraries. |
+| CDN permanent 404 | File is listed in metadata but not available on TorBox CDN. Hang no longer multi-minute polls 404/403. Prefer **movies/tv** mounts with video `file_regex` so images never appear in Plex libraries. Delete the junk item on TorBox if it remains. |
+| Note on `file_id == 0` | TorBox often uses **file_id 0 for real video** in multi-file torrents. Warpbox must **store and stream** those. Do not assume id 0 means junk. |
+
+## Main movie / episode missing vs older Warpbox (v0.7.0–pre-fix)
+
+**What you see:** Featurettes or 5/6 episodes only; other PC on v0.7.3–v0.6.0 shows the full pack. SQLite has no large main file; TorBox API lists it with `"id": 0`.
+
+| Cause | Fix |
+|-------|-----|
+| Regression: skip `file_id <= 0` on sync | Upgrade to a build that keeps `file_id == 0`, then **Resync** or re-run **Fetch item** for the torrent so the main file is upserted. |
 
 ## Rate limit errors (429) still appearing
 

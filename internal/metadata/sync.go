@@ -550,11 +550,13 @@ func (w *SyncWorker) syncOnceLocked(ctx context.Context) {
 	slog.Debug("metadata sync complete", "files_synced", count)
 }
 
-// usableTorBoxFile reports whether a TorBox file entry is safe to store and
-// stream. file_id must be positive; 0/negative are invalid for requestdl and
-// produce endless CDN 404 hang loops (e.g. junk single-file "output.jpg").
+// usableTorBoxFile reports whether a TorBox file entry is safe to store.
+// TorBox routinely assigns file_id 0 to real media (often the largest file in
+// a pack — e.g. the main feature while featurettes are 1..N). Only negative
+// IDs are treated as unusable. Permanent CDN 404s for junk names are handled
+// by hang fail-fast, not by dropping id 0 on sync.
 func usableTorBoxFile(f torbox.TorrentFile) bool {
-	return f.ID > 0
+	return f.ID >= 0
 }
 
 // upsertItemFiles stores ready, usable files for one TorBox item.

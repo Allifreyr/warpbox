@@ -654,8 +654,9 @@ func TestSyncItem_invalidID(t *testing.T) {
 }
 
 func TestUsableTorBoxFile(t *testing.T) {
-	if usableTorBoxFile(torbox.TorrentFile{ID: 0, ShortName: "output.jpg"}) {
-		t.Error("file_id 0 should be unusable")
+	// TorBox assigns file_id 0 to real media in multi-file torrents.
+	if !usableTorBoxFile(torbox.TorrentFile{ID: 0, ShortName: "Movie.mkv"}) {
+		t.Error("file_id 0 must be usable (TorBox main features often use id 0)")
 	}
 	if usableTorBoxFile(torbox.TorrentFile{ID: -1}) {
 		t.Error("negative file_id should be unusable")

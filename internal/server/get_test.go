@@ -346,19 +346,19 @@ func TestHandleGetCDNHang_Permanent404GivesUp(t *testing.T) {
 	}
 }
 
-func TestStreamFileContent_RejectsFileIDZero(t *testing.T) {
+func TestStreamFileContent_RejectsNegativeFileID(t *testing.T) {
 	store, err := metadata.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	if err := store.UpsertFile(metadata.FileRecord{
-		ItemID: 1, FileID: 0, Source: metadata.SourceTorrent,
-		Name: "output.jpg", Path: "output.jpg", Size: 100,
+		ItemID: 1, FileID: -1, Source: metadata.SourceTorrent,
+		Name: "bad.mkv", Path: "bad.mkv", Size: 100,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	file, err := store.GetFileByPath("output.jpg")
+	file, err := store.GetFileByPath("bad.mkv")
 	if err != nil || file == nil {
 		t.Fatalf("setup: %v file=%v", err, file)
 	}
@@ -368,7 +368,7 @@ func TestStreamFileContent_RejectsFileIDZero(t *testing.T) {
 		negativeCache: make(map[string]*negativeCacheEntry),
 	}
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/webdav/output.jpg", nil)
+	req := httptest.NewRequest(http.MethodGet, "/webdav/bad.mkv", nil)
 	req.Header.Set("Range", "bytes=0-99")
 	srv.streamFileContent(w, req, file)
 
