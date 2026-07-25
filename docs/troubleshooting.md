@@ -56,6 +56,14 @@ This page covers common problems, what they mean, and how to fix them.
 |-------|-----|
 | Regression: skip `file_id <= 0` on sync | Upgrade to a build that keeps `file_id == 0`, then **Resync** or re-run **Fetch item** for the torrent so the main file is upserted. |
 
+## Folders start with `www.UIndex.org    -    `
+
+**What you see:** Top-level dirs like `www.UIndex.org    -    Movie.2020…`; Plex fails to match the title.
+
+| Cause | Fix |
+|-------|-----|
+| Indexer junk in TorBox folder / S3 path | Current Warpbox strips `www.UIndex.org -` (any spacing) from the **top-level** virtual folder on sync. Run a full **Resync** (or Fetch item) so paths update. Nested folders (e.g. `Season 1/`) are unchanged. |
+
 ## Rate limit errors (429) still appearing
 
 **What you see:** `429 Too Many Requests` in logs, or TorBox emails about rate limiting.

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -311,6 +312,39 @@ func sanitizePathSegment(s string) string {
 	return b.String()
 }
 
+// knownIndexerDirPrefixes are always stripped from the top-level virtual folder
+// name so Plex/Jellyfin match real titles. Matched case-insensitively at the
+// start of a single path segment (not nested season folders).
+// Add new indexer junk prefixes here rather than scattering string checks.
+var knownIndexerDirPrefixes = []*regexp.Regexp{
+	// "www.UIndex.org    -    Title" / "www.uindex.org - Title"
+	regexp.MustCompile(`(?i)^www\.uindex\.org\s*-\s*`),
+}
+
+// stripKnownIndexerPrefix removes a leading junk indexer label from one path
+// segment. If stripping would leave an empty name, the original is kept.
+func stripKnownIndexerPrefix(segment string) string {
+	s := strings.TrimSpace(segment)
+	if s == "" {
+		return segment
+	}
+	for _, re := range knownIndexerDirPrefixes {
+		if loc := re.FindStringIndex(s); loc != nil && loc[0] == 0 {
+			rest := strings.TrimSpace(s[loc[1]:])
+			if rest != "" {
+				return rest
+			}
+		}
+	}
+	return s
+}
+
+// normalizeTopDirSegment sanitizes a top-level release folder and strips known
+// indexer prefixes (e.g. UIndex) that break media-server matching.
+func normalizeTopDirSegment(segment string) string {
+	return stripKnownIndexerPrefix(sanitizePathSegment(segment))
+}
+
 // fireChangeHooks compares old and new item sets and calls the registered
 // OnItemsAdded and OnItemsRemoved hooks with the directory names of changed items.
 func (w *SyncWorker) fireChangeHooks(oldItems, newItems []ItemDir) {
@@ -605,6 +639,7 @@ func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source F
 	// s3_path is always "hash/torrent_dir/file_name" for multi-file torrents
 	// but can be "hash/file_name" for single-file torrents with no directory.
 	// Single-file torrents are placed directly at root level (no wrapper dir).
+	// Top-level release folders also strip known indexer prefixes (e.g. UIndex).
 	var virtualPath string
 	if idx := strings.IndexByte(f.S3Path, '/'); idx > 0 && idx+1 < len(f.S3Path) {
 		rest := f.S3Path[idx+1:]
@@ -613,16 +648,20 @@ func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source F
 			if hasRenameTag && itemName != "" {
 				rest = itemName + rest[idx2:]
 			}
-			// Sanitize each path segment.
+			// Sanitize each path segment; normalize top-level dir for Plex matching.
 			segments := strings.Split(rest, "/")
 			for i, seg := range segments {
-				segments[i] = sanitizePathSegment(seg)
+				if i == 0 {
+					segments[i] = normalizeTopDirSegment(seg)
+				} else {
+					segments[i] = sanitizePathSegment(seg)
+				}
 			}
 			virtualPath = strings.Join(segments, "/")
 		} else {
 			// Single file s3_path: "hash/filename.ext"
 			if hasRenameTag && itemName != "" {
-				virtualPath = sanitizePathSegment(itemName) + "/" + sanitizePathSegment(rest)
+				virtualPath = normalizeTopDirSegment(itemName) + "/" + sanitizePathSegment(rest)
 			} else {
 				// Place directly at root level (no wrapper directory).
 				virtualPath = sanitizePathSegment(rest)
@@ -631,7 +670,7 @@ func buildFileRecord(itemID int64, f torbox.TorrentFile, syncTag int64, source F
 	} else {
 		// Fallback: no slash in s3_path at all — use sanitized ShortName.
 		if hasRenameTag && itemName != "" {
-			virtualPath = sanitizePathSegment(itemName) + "/" + sanitizePathSegment(f.ShortName)
+			virtualPath = normalizeTopDirSegment(itemName) + "/" + sanitizePathSegment(f.ShortName)
 		} else {
 			virtualPath = sanitizePathSegment(f.ShortName)
 		}

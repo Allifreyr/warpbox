@@ -425,6 +425,69 @@ func TestBuildFileRecordWithRenameTag(t *testing.T) {
 	}
 }
 
+func TestStripKnownIndexerPrefix(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"www.UIndex.org    -    The Wiz (1978) 1080p BluRay 5.1-LAMA", "The Wiz (1978) 1080p BluRay 5.1-LAMA"},
+		{"www.uindex.org - Rick.and.Morty.S09E05.1080p.WEB.h264-EDITH", "Rick.and.Morty.S09E05.1080p.WEB.h264-EDITH"},
+		{"www.UIndex.org-Title.Without.Spaces", "Title.Without.Spaces"},
+		{"Normal.Movie.2020", "Normal.Movie.2020"},
+		{"  www.UIndex.org - Title  ", "Title"},
+	}
+	for _, tc := range cases {
+		if got := stripKnownIndexerPrefix(tc.in); got != tc.want {
+			t.Errorf("stripKnownIndexerPrefix(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	// Empty after strip: keep non-empty original (trimmed).
+	emptyish := "www.UIndex.org    -    "
+	if got := stripKnownIndexerPrefix(emptyish); got == "" {
+		t.Errorf("stripKnownIndexerPrefix(%q) = empty; want non-empty fallback", emptyish)
+	}
+}
+
+func TestBuildFileRecordStripsUIndexTopDir(t *testing.T) {
+	f := torbox.TorrentFile{
+		ID:        10,
+		S3Path:    "hash/www.UIndex.org    -    The Wiz (1978) 1080p BluRay 5.1-LAMA/movie.mkv",
+		ShortName: "movie.mkv",
+	}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, nil, "")
+	want := "The Wiz (1978) 1080p BluRay 5.1-LAMA/movie.mkv"
+	if rec.Path != want {
+		t.Errorf("Path = %q, want %q", rec.Path, want)
+	}
+}
+
+func TestBuildFileRecordStripsUIndexPreservesSubdirs(t *testing.T) {
+	f := torbox.TorrentFile{
+		ID:        10,
+		S3Path:    "hash/www.UIndex.org    -    Show.S01/Season 1/ep01.mkv",
+		ShortName: "ep01.mkv",
+	}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", nil, nil, "")
+	want := "Show.S01/Season 1/ep01.mkv"
+	if rec.Path != want {
+		t.Errorf("Path = %q, want %q", rec.Path, want)
+	}
+}
+
+func TestBuildFileRecordRenameStripsUIndexFromItemName(t *testing.T) {
+	f := torbox.TorrentFile{
+		ID:        10,
+		S3Path:    "hash/whatever/movie.mkv",
+		ShortName: "movie.mkv",
+	}
+	overrideTags := map[string]bool{"rename": true}
+	rec := buildFileRecord(1, f, 1, SourceTorrent, "", []string{"rename"}, overrideTags,
+		"www.UIndex.org    -    Clean Title 2024")
+	want := "Clean Title 2024/movie.mkv"
+	if rec.Path != want {
+		t.Errorf("Path = %q, want %q", rec.Path, want)
+	}
+}
+
 func TestBuildFileRecordRenamePreservesSubdirs(t *testing.T) {
 	// Nested structure: only top-level dir is replaced
 	f := torbox.TorrentFile{
