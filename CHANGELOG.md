@@ -219,8 +219,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
 [Unreleased]: /compare/v0.7.5-v0.8.2...HEAD
-[v0.7.4-v0.8.1]: /compare/v0.7.4-v0.8.1...v0.7.5-v0.8.2
-[v0.7.4-v0.8.1]: /compare/v0.7.3-v0.8.0...v0.7.4-v0.8.1
+[v0.7.5-v0.8.2]: /compare/v0.7.4-v0.8.1...v0.7.5-v0.8.2
+[v0.7.4-v0.8.1]: /compare/v0.7.4-v0.8.0...v0.7.4-v0.8.1
 [v0.7.4-v0.8.0]: /compare/v0.7.3-v0.7.0...v0.7.4-v0.8.0
 [v0.7.4-v0.7.0]: /compare/v0.7.3-v0.6.0...v0.7.4-v0.7.0
 [v0.7.3-v0.6.0]: /compare/v0.7.2-v0.5.1...v0.7.3-v0.6.0
