@@ -63,7 +63,7 @@ If you change the code, update this spec.
 
 13. **Sync worker.** `metadata.NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, overrideTags)`:
     - Stores references to the metadata store, TorBox client, throttle queue, interval, and limit
-    - Wires library hooks: `syncWorker.OnItemsAdded` and `syncWorker.OnItemsRemoved` are set to call `runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items)` when configured
+    - Wires library hooks: `syncWorker.OnItemsAdded` and `syncWorker.OnItemsRemoved` are set to call `runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items, hookWorkDir)` when configured (`hookWorkDir` = directory containing the config file)
     - `go syncWorker.Start(ctx)` — runs the periodic sync loop in a background goroutine
 
 14. **Actions registration.** `server.SetActions(map[string]server.ActionFunc{...})`:
@@ -108,6 +108,7 @@ If you change the code, update this spec.
 
 - `exec.CommandContext(timeoutCtx, cmd, args..., items...)` — runs a shell command with item directory names as positional arguments.
 - Command string is split by whitespace (`strings.Fields`); first token is the executable, rest are prepended to the item list.
+- Sets `cmd.Dir` to the config file’s parent directory (absolute), so relative paths resolve next to `config.yml` (e.g. `/data/` in Docker), not the process CWD.
 - Timeout from `library.hook_timeout_seconds` (default 30s). Timeout produces a warning log, not a fatal error.
 - `CombinedOutput()` captures stdout+stderr for error logging.
 
@@ -511,9 +512,10 @@ PROPFIND and directory-listing responses percent-encode each path segment when e
 
 ### Change Hooks
 
-Config keys `library.on_items_added` and `library.on_items_removed` specify shell commands. When the sync worker detects items have appeared or disappeared, it calls `runItemsHook(command, timeoutSec, items)` in `main.go`, which:
+Config keys `library.on_items_added` and `library.on_items_removed` specify shell commands. When the sync worker detects items have appeared or disappeared, it calls `runItemsHook(command, timeoutSec, items, workDir)` in `main.go`, which:
 - Splits command by whitespace: first token = executable, rest = static args
 - Appends item directory names as trailing positional arguments
+- Sets `cmd.Dir` to the config file’s parent directory (so relative paths resolve against `config.yml`’s location)
 - `exec.CommandContext(timeoutCtx, cmd, args..., items...)`
 - Timeout from `hook_timeout_seconds` (default 30, range 1–3600)
 - Exceeding timeout → warning log, not fatal
@@ -825,8 +827,8 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 | Key | Type | Default | Validation | Description |
 |-----|------|---------|------------|-------------|
 | `virtual_paths` | array | `[]` | unique names, no `/`, no `__all__` | Virtual path filters |
-| `on_items_added` | string | `""` | — | Shell command for new items |
-| `on_items_removed` | string | `""` | — | Shell command for removed items |
+| `on_items_added` | string | `""` | — | Shell command for new items; runs from config file’s directory |
+| `on_items_removed` | string | `""` | — | Shell command for removed items; runs from config file’s directory |
 | `hook_timeout_seconds` | int | `30` | 1–3600 | Hook execution timeout |
 
 Each virtual path entry:

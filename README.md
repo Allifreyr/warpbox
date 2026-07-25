@@ -96,6 +96,10 @@ docker compose restart warpbox
 > Prefer editing on the host? Bind a directory instead of the named volume, e.g.
 > `./data:/data`, and put `config.yml` (and the DB) under that folder.
 
+### Library change hooks
+
+Warpbox can run shell commands when new or removed items are detected during a sync. Configure `library.on_items_added` and `library.on_items_removed` in your `config.yml`. Hook commands run from the config file's directory (`/data/` in Docker), so a script placed alongside `config.yml` can be referenced with a relative path like `sh myscript.sh`.
+
 ### Bare mount (without Docker)
 
 ```bash

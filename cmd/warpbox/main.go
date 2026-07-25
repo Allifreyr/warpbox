@@ -139,16 +139,18 @@ func main() {
 		tagAllowlist,
 	)
 
-	// Set library change hooks.
+	// Set library change hooks. Run from the config file's directory so relative
+	// script paths (e.g. "sh myscript.sh") resolve next to config.yml, not CWD.
 	libCfg := &cfg.Library
+	hookWorkDir := hookWorkDirFromConfigPath(*configPath)
 	if libCfg.OnItemsAdded != "" {
 		syncWorker.OnItemsAdded = func(items []string) {
-			runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items)
+			runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items, hookWorkDir)
 		}
 	}
 	if libCfg.OnItemsRemoved != "" {
 		syncWorker.OnItemsRemoved = func(items []string) {
-			runItemsHook(libCfg.OnItemsRemoved, libCfg.HookTimeoutSec, items)
+			runItemsHook(libCfg.OnItemsRemoved, libCfg.HookTimeoutSec, items, hookWorkDir)
 		}
 	}
 
@@ -242,7 +244,17 @@ func main() {
 	}
 }
 
-func runItemsHook(command string, timeoutSec int, items []string) {
+// hookWorkDirFromConfigPath returns the directory that should be used as
+// cmd.Dir for library hooks (parent of the config file). Prefer an absolute
+// path so a relative -config flag still resolves to the file's real folder.
+func hookWorkDirFromConfigPath(configPath string) string {
+	if abs, err := filepath.Abs(configPath); err == nil {
+		return filepath.Dir(abs)
+	}
+	return filepath.Dir(configPath)
+}
+
+func runItemsHook(command string, timeoutSec int, items []string, workDir string) {
 	if command == "" || len(items) == 0 {
 		return
 	}
@@ -256,6 +268,9 @@ func runItemsHook(command string, timeoutSec int, items []string) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, parts[0], args...)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
