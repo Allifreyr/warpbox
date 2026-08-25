@@ -36,49 +36,49 @@ func mustReadString(fs embed.FS, name string) string {
 
 // LandingData holds the dynamic values rendered into the landing page template.
 type LandingData struct {
-	Version              string
-	Uptime               string
-	FileCount            int // Total rows (may include duplicates from multiple TorBox items)
-	FileCountUnique      int // Unique virtual paths (what users see in WebDAV)
-	ItemCount            int
-	WebDAVURL            string
-	HTTPURL              string
-	InfuseURL            string
-	LogsURL              string
-	AllocMB              uint64
-	SysMB                uint64
-	NumGC                uint64
-	HeapObjects          uint64
-	ListenAddr           string
-	WebDAVRoot           string
-	CDNURLTTLMinutes     int
-	RequestsPerMinute    int
-	SyncIntervalMinutes  int
-	LogFormat            string
-	LogLevel             string
-	APICallsTotal        int64
-	APISuccessfulCalls   int64
-	APIFailedCalls       int64
-	APICallsLastMinute   int
-	LastSyncTime         string // human-readable time of last successful sync
-	LastSyncError        string // empty if last sync succeeded
-	APIBad               bool   // true if there's a sync error to highlight
-	NegativeCacheSize    int    // Current entries in the negative cache
-	CircuitBreakerSize   int    // Current entries in the circuit breaker
-	DBLockErrors         int64
+	Version             string
+	Uptime              string
+	FileCount           int // Total rows (may include duplicates from multiple TorBox items)
+	FileCountUnique     int // Unique virtual paths (what users see in WebDAV)
+	ItemCount           int
+	WebDAVURL           string
+	HTTPURL             string
+	InfuseURL           string
+	LogsURL             string
+	AllocMB             uint64
+	SysMB               uint64
+	NumGC               uint64
+	HeapObjects         uint64
+	ListenAddr          string
+	WebDAVRoot          string
+	CDNURLTTLMinutes    int
+	RequestsPerMinute   int
+	SyncIntervalMinutes int
+	LogFormat           string
+	LogLevel            string
+	APICallsTotal       int64
+	APISuccessfulCalls  int64
+	APIFailedCalls      int64
+	APICallsLastMinute  int
+	LastSyncTime        string // human-readable time of last successful sync
+	LastSyncError       string // empty if last sync succeeded
+	APIBad              bool   // true if there's a sync error to highlight
+	NegativeCacheSize   int    // Current entries in the negative cache
+	CircuitBreakerSize  int    // Current entries in the circuit breaker
+	DBLockErrors        int64
 
 	// Cache config fields
 	CDNURLAutoRepair     string // "on" or "off"
 	CDNURLRepairRetries  int
-	CDNURLRetryBackoff   int    // in seconds
+	CDNURLRetryBackoff   int // in seconds
 	CDNURLRetryCount     int
-	NegativeCacheTTL     int    // in seconds
+	NegativeCacheTTL     int // in seconds
 	CircuitBreakerFails  int
-	CircuitBreakerWindow int    // in seconds
-	CircuitBreakerStale  int    // in minutes
+	CircuitBreakerWindow int // in seconds
+	CircuitBreakerStale  int // in minutes
 	NegCacheMaxEntries   int
 	CbMaxEntries         int
-	CleanupInterval      int    // in seconds
+	CleanupInterval      int // in seconds
 	MaxCDNConnections    int
 
 	// Sync config fields
@@ -96,19 +96,14 @@ type LandingData struct {
 	CSRFToken string
 
 	// TorBox account fields
-	TBUserID           int64
-	TBEmail            string
-	TBPlan             int
-	TBPlanName         string
-	TBIsPremium        bool
-	TBPremiumExpires   string
-	TBCreatedAt        string
-	TBReferralCode     string
-	TBPremiumDLimit    int64
-	TBTotalDownloaded  int64
-	TBTotalEgressed    int64
-	TBOverallRatio     float64
-	TBHasAccount       bool // whether user info was successfully fetched
+	TBUserID         int64
+	TBEmail          string
+	TBPlan           int
+	TBPlanName       string
+	TBIsPremium      bool
+	TBPremiumExpires string
+	TBCreatedAt      string
+	TBHasAccount     bool // whether user info was successfully fetched
 }
 
 // handleLanding serves the Warpbox branded landing page with runtime stats.
@@ -175,27 +170,27 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		HTTPURL:             "/http/",
 		InfuseURL:           "/infuse/",
 		LogsURL:             "/logs/",
-		AllocMB:              mem.Alloc / 1024 / 1024,
-		SysMB:                mem.Sys / 1024 / 1024,
-		NumGC:                uint64(mem.NumGC),
-		HeapObjects:          mem.HeapObjects,
-		ListenAddr:           s.cfg.ListenAddr,
-		WebDAVRoot:           webdavRoot,
-		CDNURLTTLMinutes:     s.cfg.CDNTtlMinutes,
-		RequestsPerMinute:    s.cfg.RequestsPerMinute,
-		SyncIntervalMinutes:  s.cfg.SyncIntervalMinute,
-		LogFormat:            s.cfg.LogFormat,
-		LogLevel:             s.cfg.LogLevel,
-		APICallsTotal:        throttleStats.TotalCalls,
-		APISuccessfulCalls:   throttleStats.SuccessfulCalls,
-		APIFailedCalls:       throttleStats.FailedCalls,
-		APICallsLastMinute:   throttleStats.CallsLastMinute,
-		LastSyncTime:         lastSyncTime,
-		LastSyncError:        lastSyncErr,
-		APIBad:               apiBad,
-		NegativeCacheSize:    negCacheSize,
-		CircuitBreakerSize:   cbSize,
-		DBLockErrors:         s.store.DBLockErrors(),
+		AllocMB:             mem.Alloc / 1024 / 1024,
+		SysMB:               mem.Sys / 1024 / 1024,
+		NumGC:               uint64(mem.NumGC),
+		HeapObjects:         mem.HeapObjects,
+		ListenAddr:          s.cfg.ListenAddr,
+		WebDAVRoot:          webdavRoot,
+		CDNURLTTLMinutes:    s.cfg.CDNTtlMinutes,
+		RequestsPerMinute:   s.cfg.RequestsPerMinute,
+		SyncIntervalMinutes: s.cfg.SyncIntervalMinute,
+		LogFormat:           s.cfg.LogFormat,
+		LogLevel:            s.cfg.LogLevel,
+		APICallsTotal:       throttleStats.TotalCalls,
+		APISuccessfulCalls:  throttleStats.SuccessfulCalls,
+		APIFailedCalls:      throttleStats.FailedCalls,
+		APICallsLastMinute:  throttleStats.CallsLastMinute,
+		LastSyncTime:        lastSyncTime,
+		LastSyncError:       lastSyncErr,
+		APIBad:              apiBad,
+		NegativeCacheSize:   negCacheSize,
+		CircuitBreakerSize:  cbSize,
+		DBLockErrors:        s.store.DBLockErrors(),
 
 		// Cache config
 		CDNURLAutoRepair:     autoRepair,
@@ -229,22 +224,17 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 
 	if ui := s.TorBoxUserInfo(); ui != nil {
 		premiumExpires := ""
-		if ui.PremiumExpires != nil {
-			premiumExpires = *ui.PremiumExpires
+		if ui.PremiumExpiresAt != nil {
+			premiumExpires = formatTorBoxDate(*ui.PremiumExpiresAt)
 		}
 		data.TBHasAccount = true
 		data.TBUserID = ui.ID
 		data.TBEmail = ui.Email
 		data.TBPlan = ui.Plan
-		data.TBPlanName = ui.PlanName
-		data.TBIsPremium = ui.Premium
+		data.TBPlanName = ui.PlanName()
+		data.TBIsPremium = ui.IsSubscribed
 		data.TBPremiumExpires = premiumExpires
-		data.TBCreatedAt = ui.CreatedAt
-		data.TBReferralCode = ui.ReferralCode
-		data.TBPremiumDLimit = ui.PremiumDownloadLimit
-		data.TBTotalDownloaded = ui.TotalDownloaded
-		data.TBTotalEgressed = ui.TotalEgressed
-		data.TBOverallRatio = ui.OverallRatio
+		data.TBCreatedAt = formatTorBoxDate(ui.CreatedAt)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -254,15 +244,24 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// formatDuration returns a human-readable duration string like "2h34m12s".
+// formatDuration returns a human-readable duration string like "2h34m12s"
+// or "16d16h32m55s" when the duration is a day or longer.
 func formatDuration(d time.Duration) string {
 	d = d.Round(time.Second)
+	if d < 0 {
+		d = -d
+	}
+	days := d / (24 * time.Hour)
+	d -= days * 24 * time.Hour
 	h := d / time.Hour
 	d -= h * time.Hour
 	m := d / time.Minute
 	d -= m * time.Minute
 	s := d / time.Second
 
+	if days > 0 {
+		return fmt.Sprintf("%dd%dh%dm%ds", days, h, m, s)
+	}
 	if h > 0 {
 		return fmt.Sprintf("%dh%dm%ds", h, m, s)
 	}
@@ -270,6 +269,19 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm%ds", m, s)
 	}
 	return fmt.Sprintf("%ds", s)
+}
+
+func formatTorBoxDate(s string) string {
+	if s == "" {
+		return ""
+	}
+	layouts := []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05"}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().Format("2006-01-02")
+		}
+	}
+	return s
 }
 
 // handleChartJS serves the embedded Chart.js bundle at /chart.umd.min.js.

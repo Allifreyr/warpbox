@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,12 +115,12 @@ func TestBuildFileRecordSanitizesPath(t *testing.T) {
 }
 
 func TestSyncWorker_Stop_BeforeStart(t *testing.T) {
-	w := NewSyncWorker(nil, nil, nil, time.Minute, 5000, false, 3, time.Second, nil)
+	w := NewSyncWorker(nil, nil, nil, time.Minute, 5000, false, 3, time.Second, 0, nil)
 	w.Stop()
 }
 
 func TestSyncWorker_Restart_BeforeStart(t *testing.T) {
-	w := NewSyncWorker(nil, nil, nil, time.Minute, 5000, false, 3, time.Second, nil)
+	w := NewSyncWorker(nil, nil, nil, time.Minute, 5000, false, 3, time.Second, 0, nil)
 	w.Restart()
 }
 
@@ -144,7 +146,7 @@ func newTestSyncEnv(t *testing.T) (*SyncWorker, *httptest.Server, *Store, func()
 	qCtx, qCancel := context.WithCancel(context.Background())
 	queue.Start(qCtx)
 
-	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 3, time.Second, nil)
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 3, time.Second, 0, nil)
 
 	cleanup := func() {
 		qCancel()
@@ -215,7 +217,7 @@ func newTestSyncEnvWithHandler(t *testing.T, handler http.HandlerFunc, retryAtte
 	qCtx, qCancel := context.WithCancel(context.Background())
 	queue.Start(qCtx)
 
-	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, retryAttempts, retryBackoff, nil)
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, retryAttempts, retryBackoff, 0, nil)
 
 	cleanup := func() {
 		qCancel()
@@ -619,7 +621,7 @@ func TestSyncItem_upsertsWithoutPruningOthers(t *testing.T) {
 	defer qCancel()
 	queue.Start(qCtx)
 
-	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 0, time.Second, nil)
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 0, time.Second, 0, nil)
 	res, err := sw.SyncItem(context.Background(), SourceTorrent, 42)
 	if err != nil {
 		t.Fatalf("SyncItem: %v", err)
@@ -694,7 +696,7 @@ func TestSyncItem_notReady(t *testing.T) {
 	defer qCancel()
 	queue.Start(qCtx)
 
-	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 0, time.Second, nil)
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 0, time.Second, 0, nil)
 	res, err := sw.SyncItem(context.Background(), SourceTorrent, 5)
 	if err != nil {
 		t.Fatalf("SyncItem: %v", err)
@@ -709,10 +711,152 @@ func TestSyncItem_notReady(t *testing.T) {
 }
 
 func TestSyncItem_invalidID(t *testing.T) {
-	sw := NewSyncWorker(nil, nil, nil, time.Hour, 5000, false, 0, time.Second, nil)
+	sw := NewSyncWorker(nil, nil, nil, time.Hour, 5000, false, 0, time.Second, 0, nil)
 	_, err := sw.SyncItem(context.Background(), SourceTorrent, 0)
 	if err == nil {
 		t.Fatal("expected error for id 0")
+	}
+}
+
+func TestSyncOnce_pruneOnlySucceededSource(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 1, Source: SourceTorrent,
+		Name: "old-tor.mkv", Path: "old-tor.mkv", Size: 10, SyncTag: 99,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(FileRecord{
+		ItemID: 2, FileID: 1, Source: SourceUsenet,
+		Name: "keep-usenet.mkv", Path: "keep-usenet.mkv", Size: 10, SyncTag: 99,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "usenet") {
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte("error code: 502"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"success": true,
+			"data": [{
+				"id": 9,
+				"name": "New Tor",
+				"download_state": "cached",
+				"download_present": true,
+				"created_at": "2026-01-01T00:00:00Z",
+				"files": [{
+					"id": 1,
+					"name": "new-tor.mkv",
+					"size": 100,
+					"s3_path": "hash/new-tor.mkv",
+					"short_name": "new-tor.mkv",
+					"mimetype": "video/x-matroska"
+				}]
+			}]
+		}`))
+	}))
+	defer ts.Close()
+
+	client := torbox.NewClient("key")
+	client.SetBaseURL(ts.URL)
+	client.SetHTTPClient(&http.Client{})
+	queue := throttle.NewQueue(99999)
+	qCtx, qCancel := context.WithCancel(context.Background())
+	defer qCancel()
+	queue.Start(qCtx)
+
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 0, time.Second, 0, nil)
+	sw.SyncNow()
+
+	if f, _ := store.GetFileByPath("old-tor.mkv"); f != nil {
+		t.Error("stale torrent row should be pruned")
+	}
+	if f, _ := store.GetFileByPath("keep-usenet.mkv"); f == nil {
+		t.Error("usenet row must survive failed usenet fetch")
+	}
+	if f, _ := store.GetFileByPath("new-tor.mkv"); f == nil {
+		t.Error("new torrent row should be present")
+	}
+}
+
+func TestSyncOnce_skipIfAlreadyRunning(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var closeEntered sync.Once
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "torrents") && r.URL.Query().Get("id") == "" {
+			closeEntered.Do(func() { close(entered) })
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[],"success":true}`))
+	}))
+	defer ts.Close()
+
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	client := torbox.NewClient("key")
+	client.SetBaseURL(ts.URL)
+	client.SetHTTPClient(&http.Client{})
+	queue := throttle.NewQueue(99999)
+	qCtx, qCancel := context.WithCancel(context.Background())
+	defer qCancel()
+	queue.Start(qCtx)
+
+	sw := NewSyncWorker(store, client, queue, time.Hour, 5000, false, 0, time.Second, 0, nil)
+
+	done := make(chan struct{})
+	go func() {
+		sw.syncOnce(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first sync did not start")
+	}
+
+	start := time.Now()
+	sw.syncOnce(context.Background())
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatal("second full sync should skip immediately while first is running")
+	}
+
+	itemDone := make(chan error, 1)
+	go func() {
+		_, err := sw.SyncItem(context.Background(), SourceTorrent, 1)
+		itemDone <- err
+	}()
+	select {
+	case err := <-itemDone:
+		t.Fatalf("SyncItem returned while full sync held syncMu: %v", err)
+	case <-time.After(80 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first sync did not finish")
+	}
+	select {
+	case <-itemDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SyncItem should proceed after full sync releases syncMu")
 	}
 }
 

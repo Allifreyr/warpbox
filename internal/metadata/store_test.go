@@ -595,7 +595,7 @@ func TestPruneBySyncTag_removesNonMatching(t *testing.T) {
 		t.Fatalf("UpsertFile unsynced failed: %v", err)
 	}
 
-	n, err := s.PruneBySyncTag(2)
+	n, err := s.PruneBySyncTag(2, SourceTorrent)
 	if err != nil {
 		t.Fatalf("PruneBySyncTag failed: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestPruneBySyncTag_emptyStore(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
 
-	n, err := s.PruneBySyncTag(1)
+	n, err := s.PruneBySyncTag(1, SourceTorrent)
 	if err != nil {
 		t.Fatalf("PruneBySyncTag failed: %v", err)
 	}
@@ -636,11 +636,11 @@ func TestPruneBySyncTag_invalidTag(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()
 
-	_, err := s.PruneBySyncTag(0)
+	_, err := s.PruneBySyncTag(0, SourceTorrent)
 	if err == nil {
 		t.Error("expected error for tag 0")
 	}
-	_, err = s.PruneBySyncTag(-1)
+	_, err = s.PruneBySyncTag(-1, SourceTorrent)
 	if err == nil {
 		t.Error("expected error for tag -1")
 	}
@@ -669,7 +669,7 @@ func TestPruneBySyncTag_batchMultiple(t *testing.T) {
 		t.Fatalf("UpsertFile survivor failed: %v", err)
 	}
 
-	n, err := s.PruneBySyncTag(2)
+	n, err := s.PruneBySyncTag(2, SourceTorrent)
 	if err != nil {
 		t.Fatalf("PruneBySyncTag failed: %v", err)
 	}
@@ -683,6 +683,72 @@ func TestPruneBySyncTag_batchMultiple(t *testing.T) {
 	}
 	if survivor == nil {
 		t.Error("survivor file with sync_tag=2 should survive")
+	}
+}
+
+func TestPruneBySyncTag_scopedBySource(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 1, Source: SourceTorrent,
+		Name: "old-tor.mkv", Path: "old-tor.mkv", Size: 100, SyncTag: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 2, FileID: 1, Source: SourceUsenet,
+		Name: "keep-usenet.mkv", Path: "keep-usenet.mkv", Size: 100, SyncTag: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 3, FileID: 1, Source: SourceTorrent,
+		Name: "new-tor.mkv", Path: "new-tor.mkv", Size: 100, SyncTag: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.PruneBySyncTag(2, SourceTorrent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 torrent row pruned, got %d", n)
+	}
+	if f, _ := s.GetFileByPath("old-tor.mkv"); f != nil {
+		t.Error("stale torrent row should be pruned")
+	}
+	if f, _ := s.GetFileByPath("keep-usenet.mkv"); f == nil {
+		t.Error("usenet row must survive torrent-only prune")
+	}
+	if f, _ := s.GetFileByPath("new-tor.mkv"); f == nil {
+		t.Error("current torrent row should survive")
+	}
+}
+
+func TestSetFileSize(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+	if err := s.UpsertFile(FileRecord{
+		ItemID: 1, FileID: 1, Source: SourceTorrent,
+		Name: "a.mkv", Path: "a.mkv", Size: 999,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.GetFileByPath("a.mkv")
+	if err != nil || f == nil {
+		t.Fatalf("lookup: %v %v", err, f)
+	}
+	if err := s.SetFileSize(f.ID, 42); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetFileByPath("a.mkv")
+	if err != nil || got == nil {
+		t.Fatalf("re-lookup: %v %v", err, got)
+	}
+	if got.Size != 42 {
+		t.Errorf("size = %d, want 42", got.Size)
 	}
 }
 

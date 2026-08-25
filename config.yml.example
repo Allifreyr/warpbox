@@ -6,6 +6,9 @@
 torbox:
   # TorBox API key (required). Generate one from your TorBox account dashboard.
   api_key: "changeme"
+  # Per-request HTTP timeout in seconds for TorBox API calls (mylist, requestdl).
+  # Must be 5–600. Default: 90
+  # request_timeout_seconds: 90
 
 server:
   # Network address the WebDAV server listens on.
@@ -57,8 +60,8 @@ cache:
   # Default: 5
   # circuit_breaker_failures: 5
   # Sliding window in seconds for counting failures.
-  # Default: 60
-  # circuit_breaker_window_seconds: 60
+  # Default: 600 (so throttled/low-rate failures still trip the breaker)
+  # circuit_breaker_window_seconds: 600
   # Minutes the breaker stays tripped before auto-reset.
   # Default: 5
   # circuit_breaker_stale_minutes: 5
@@ -75,6 +78,14 @@ cache:
   # Maximum concurrent CDN proxy connections.
   # Default: 4
   # max_cdn_connections: 4
+
+  # Timeout in seconds when proxying a CDN byte-range request.
+  # Must be 5–600. Default: 30
+  # cdn_proxy_timeout_seconds: 30
+
+  # Backoff in seconds after a 429 when fetching a CDN URL from TorBox.
+  # Must be 1–300. Default: 30
+  # cdn_url_429_backoff_seconds: 30
 
 throttle:
   # Maximum sustained TorBox API requests per minute.
@@ -116,6 +127,11 @@ sync:
   # Exponential: backoff * 1s, * 2s, * 4s for attempts 1, 2, 3.
   # Must be 1–60. Default: 1
   # retry_backoff: 1
+
+  # Overall cap for a manual Resync in seconds. 0 = no overall cap (default);
+  # each HTTP request is still bounded by torbox.request_timeout_seconds.
+  # If set, must be 30–3600.
+  # sync_timeout_seconds: 0
 
 library:
   # Virtual library paths: filtered views over the raw TorBox file tree.

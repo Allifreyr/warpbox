@@ -16,7 +16,8 @@ import (
 
 // TorBoxConfig holds connection details for the TorBox API.
 type TorBoxConfig struct {
-	APIKey string `yaml:"api_key"` // Required
+	APIKey                string `yaml:"api_key"`                 // Required
+	RequestTimeoutSeconds int    `yaml:"request_timeout_seconds"` // Per-request HTTP timeout; default: 90
 }
 
 // ServerConfig holds the WebDAV server settings.
@@ -40,7 +41,7 @@ type CacheConfig struct {
 
 	// Circuit breaker: per-torrent failure tracking.
 	CircuitBreakerFailures  *int `yaml:"circuit_breaker_failures"`       // Max failures in window; nil→default 5
-	CircuitBreakerWindowSec *int `yaml:"circuit_breaker_window_seconds"` // Sliding window; nil→default 60
+	CircuitBreakerWindowSec *int `yaml:"circuit_breaker_window_seconds"` // Sliding window; nil→default 600
 	CircuitBreakerStaleMin  *int `yaml:"circuit_breaker_stale_minutes"`  // Stale duration; nil→default 5
 
 	// Memory management settings.
@@ -50,6 +51,10 @@ type CacheConfig struct {
 
 	// CDN proxy settings.
 	MaxCDNConnections *int `yaml:"max_cdn_connections"` // Max concurrent CDN proxy connections; nil→default 4
+
+	// CDN timeout settings.
+	CDNProxyTimeoutSeconds  int `yaml:"cdn_proxy_timeout_seconds"`   // Timeout for proxying a CDN byte range; default: 30
+	CDNURL429BackoffSeconds int `yaml:"cdn_url_429_backoff_seconds"` // Backoff for a 429 when fetching a CDN URL; default: 30
 }
 
 // ThrottleConfig holds rate-limiting settings.
@@ -65,11 +70,12 @@ type LoggingConfig struct {
 
 // SyncConfig holds metadata sync settings.
 type SyncConfig struct {
-	IntervalMinutes int  `yaml:"interval_minutes"` // Default: 5
-	ListPageSize    int  `yaml:"list_page_size"`   // Items per page when paginating mylist API; default: 5000
-	BypassCache     bool `yaml:"bypass_cache"`     // Bypass TorBox cache when fetching torrent list; default false
-	RetryAttempts   *int `yaml:"retry_attempts"`   // Max retries for sync API errors; nil→default 3
-	RetryBackoff    *int `yaml:"retry_backoff"`    // Base backoff seconds for sync retries; nil→default 1
+	IntervalMinutes    int  `yaml:"interval_minutes"`     // Default: 5
+	ListPageSize       int  `yaml:"list_page_size"`       // Items per page when paginating mylist API; default: 5000
+	BypassCache        bool `yaml:"bypass_cache"`         // Bypass TorBox cache when fetching torrent list; default false
+	RetryAttempts      *int `yaml:"retry_attempts"`       // Max retries for sync API errors; nil→default 3
+	RetryBackoff       *int `yaml:"retry_backoff"`        // Base backoff seconds for sync retries; nil→default 1
+	SyncTimeoutSeconds int  `yaml:"sync_timeout_seconds"` // Overall cap for a manual resync in seconds; 0 = no cap (default)
 }
 
 // StatsConfig holds time-series stats collection settings.
@@ -139,8 +145,17 @@ func setDefaults(c *Config) {
 	if c.Server.ListenAddr == "" {
 		c.Server.ListenAddr = ":1412"
 	}
+	if c.TorBox.RequestTimeoutSeconds == 0 {
+		c.TorBox.RequestTimeoutSeconds = 90
+	}
 	if c.Cache.CDNURLTTLMinutes == 0 {
 		c.Cache.CDNURLTTLMinutes = 120
+	}
+	if c.Cache.CDNProxyTimeoutSeconds == 0 {
+		c.Cache.CDNProxyTimeoutSeconds = 30
+	}
+	if c.Cache.CDNURL429BackoffSeconds == 0 {
+		c.Cache.CDNURL429BackoffSeconds = 30
 	}
 	if c.Throttle.RequestsPerMinute == 0 {
 		c.Throttle.RequestsPerMinute = 250
@@ -199,7 +214,7 @@ func setDefaults(c *Config) {
 		c.Cache.CircuitBreakerFailures = &n
 	}
 	if c.Cache.CircuitBreakerWindowSec == nil {
-		n := 60
+		n := 600
 		c.Cache.CircuitBreakerWindowSec = &n
 	}
 	if c.Cache.CircuitBreakerStaleMin == nil {
@@ -248,6 +263,18 @@ func validate(c *Config) error {
 	}
 	if c.Cache.CDNURLTTLMinutes < 1 || c.Cache.CDNURLTTLMinutes > 1440 {
 		return fmt.Errorf("cache.cdn_url_ttl_minutes must be 1–1440, got %d", c.Cache.CDNURLTTLMinutes)
+	}
+	if c.TorBox.RequestTimeoutSeconds < 5 || c.TorBox.RequestTimeoutSeconds > 600 {
+		return fmt.Errorf("torbox.request_timeout_seconds must be 5–600, got %d", c.TorBox.RequestTimeoutSeconds)
+	}
+	if c.Cache.CDNProxyTimeoutSeconds < 5 || c.Cache.CDNProxyTimeoutSeconds > 600 {
+		return fmt.Errorf("cache.cdn_proxy_timeout_seconds must be 5–600, got %d", c.Cache.CDNProxyTimeoutSeconds)
+	}
+	if c.Cache.CDNURL429BackoffSeconds < 1 || c.Cache.CDNURL429BackoffSeconds > 300 {
+		return fmt.Errorf("cache.cdn_url_429_backoff_seconds must be 1–300, got %d", c.Cache.CDNURL429BackoffSeconds)
+	}
+	if s := c.Sync.SyncTimeoutSeconds; s != 0 && (s < 30 || s > 3600) {
+		return fmt.Errorf("sync.sync_timeout_seconds must be 0 (no cap) or 30–3600, got %d", s)
 	}
 	if c.Sync.IntervalMinutes < 1 || c.Sync.IntervalMinutes > 1440 {
 		return fmt.Errorf("sync.interval_minutes must be 1–1440, got %d", c.Sync.IntervalMinutes)

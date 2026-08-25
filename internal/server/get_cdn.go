@@ -163,7 +163,9 @@ func (s *Server) recordTorrentFailure(itemID int64) {
 // queue and returns the fresh CDN URL. Routes to the torrent or usenet
 // endpoint based on source. On failure it retries with exponential backoff
 // (cfg.CDNURLRetryBackoff * 1s, * 2s, * 4s, etc.) for up to
-// cfg.CDNURLRetryCount attempts. 429 responses use a 5s backoff instead.
+// cfg.CDNURLRetryCount attempts. 429 responses use
+// cfg.CDNURL429BackoffSeconds (default 30s) instead of the exponential
+// backoff.
 func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID int64) (string, error) {
 	maxRetries := s.cfg.CDNURLRetryCount
 	baseBackoff := time.Duration(s.cfg.CDNURLRetryBackoff) * time.Second
@@ -218,10 +220,10 @@ func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID i
 
 		// Exponential backoff: base * 2^attempt
 		wait := baseBackoff * (1 << attempt)
-		// 429 rate-limit errors get a long 30s backoff. Once TorBox rate-limits,
+		// 429 rate-limit errors get a long backoff. Once TorBox rate-limits,
 		// we need to give it breathing room rather than retrying aggressively.
 		if strings.Contains(res.err.Error(), "unexpected status 429") {
-			wait = 30 * time.Second
+			wait = time.Duration(s.cfg.CDNURL429BackoffSeconds) * time.Second
 		}
 		slog.Warn("CDN URL fetch failed, retrying with backoff",
 			"item_id", itemID,

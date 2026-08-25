@@ -157,6 +157,73 @@ func TestParseRangeSingleByte(t *testing.T) {
 	}
 }
 
+func TestParseCDNTrueSize(t *testing.T) {
+	n, ok := parseCDNTrueSize("bytes */12345")
+	if !ok || n != 12345 {
+		t.Errorf("got n=%d ok=%v, want 12345 true", n, ok)
+	}
+	if _, ok := parseCDNTrueSize(""); ok {
+		t.Error("empty header should fail")
+	}
+	if _, ok := parseCDNTrueSize("bytes 0-100/200"); ok {
+		t.Error("partial content-range should fail (need */N)")
+	}
+	if _, ok := parseCDNTrueSize("bytes */-1"); ok {
+		t.Error("negative size should fail")
+	}
+}
+
+func TestCorrectFileSizeFromCDN416_doesNotNegativeCache(t *testing.T) {
+	store, err := metadata.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpsertFile(metadata.FileRecord{
+		ItemID: 1, FileID: 0, Source: metadata.SourceTorrent,
+		Name: "a.mkv", Path: "a.mkv", Size: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.GetFileByPath("a.mkv")
+	if err != nil || file == nil {
+		t.Fatalf("setup: %v file=%v", err, file)
+	}
+	if err := store.SetCDNURL(file.ID, "http://cdn.example/a.mkv", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{
+		store:         store,
+		negativeCache: make(map[string]*negativeCacheEntry),
+		cfg:           Config{CDNTtlMinutes: 120, NegativeCacheTTLSeconds: 30},
+	}
+	n, ok := srv.correctFileSizeFromCDN416(file, "bytes */500", false)
+	if !ok || n != 500 {
+		t.Fatalf("got n=%d ok=%v, want 500 true", n, ok)
+	}
+	if len(srv.negativeCache) != 0 {
+		t.Fatal("416 size correction must not write the requestdl negative cache")
+	}
+	url, err := store.GetCDNURL(file.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "http://cdn.example/a.mkv" {
+		t.Errorf("cached CDN URL should be kept, got %q", url)
+	}
+	got, err := store.GetFileByPath("a.mkv")
+	if err != nil || got == nil {
+		t.Fatalf("re-lookup: %v %v", err, got)
+	}
+	if got.Size != 500 {
+		t.Errorf("size = %d, want 500", got.Size)
+	}
+	if file.Size != 500 {
+		t.Errorf("in-memory size = %d, want 500", file.Size)
+	}
+}
+
 func TestParseRangeEmpty(t *testing.T) {
 	_, err := parseRange("", 1000)
 	if err == nil {

@@ -113,6 +113,7 @@ func main() {
 	throttleQueue := throttle.NewQueue(cfg.Throttle.RequestsPerMinute)
 
 	torBoxClient := torbox.NewClient(cfg.TorBox.APIKey)
+	torBoxClient.SetTimeout(time.Duration(cfg.TorBox.RequestTimeoutSeconds) * time.Second)
 	torBoxClient.HTTP429Callback = func() { throttleQueue.Record429() }
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -136,6 +137,7 @@ func main() {
 		cfg.Sync.BypassCache,
 		*cfg.Sync.RetryAttempts,
 		time.Duration(*cfg.Sync.RetryBackoff)*time.Second,
+		time.Duration(cfg.Sync.SyncTimeoutSeconds)*time.Second,
 		tagAllowlist,
 	)
 
@@ -191,6 +193,8 @@ func main() {
 		CircuitBreakerMaxEntries: *cfg.Cache.CircuitBreakerMaxEntries,
 		CleanupIntervalSeconds:   *cfg.Cache.CleanupIntervalSeconds,
 		MaxCDNConnections:        *cfg.Cache.MaxCDNConnections,
+		CDNProxyTimeoutSeconds:   cfg.Cache.CDNProxyTimeoutSeconds,
+		CDNURL429BackoffSeconds:  cfg.Cache.CDNURL429BackoffSeconds,
 		ConfigPath:               *configPath,
 		StatsIntervalSeconds:     cfg.Stats.IntervalSeconds,
 		StatsRetentionHours:      cfg.Stats.RetentionHours,

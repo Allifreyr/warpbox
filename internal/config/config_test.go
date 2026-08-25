@@ -44,6 +44,25 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Sync.IntervalMinutes != 5 {
 		t.Errorf("sync_interval = %d, want %d", cfg.Sync.IntervalMinutes, 5)
 	}
+	if cfg.TorBox.RequestTimeoutSeconds != 90 {
+		t.Errorf("request_timeout_seconds = %d, want %d", cfg.TorBox.RequestTimeoutSeconds, 90)
+	}
+	if cfg.Cache.CDNProxyTimeoutSeconds != 30 {
+		t.Errorf("cdn_proxy_timeout_seconds = %d, want %d", cfg.Cache.CDNProxyTimeoutSeconds, 30)
+	}
+	if cfg.Cache.CDNURL429BackoffSeconds != 30 {
+		t.Errorf("cdn_url_429_backoff_seconds = %d, want %d", cfg.Cache.CDNURL429BackoffSeconds, 30)
+	}
+	if cfg.Sync.SyncTimeoutSeconds != 0 {
+		t.Errorf("sync_timeout_seconds = %d, want 0", cfg.Sync.SyncTimeoutSeconds)
+	}
+	if cfg.Cache.CircuitBreakerWindowSec == nil || *cfg.Cache.CircuitBreakerWindowSec != 600 {
+		got := 0
+		if cfg.Cache.CircuitBreakerWindowSec != nil {
+			got = *cfg.Cache.CircuitBreakerWindowSec
+		}
+		t.Errorf("circuit_breaker_window_seconds = %d, want 600", got)
+	}
 	if cfg.Server.EnablePprof {
 		t.Errorf("enable_pprof = %v, want %v", cfg.Server.EnablePprof, false)
 	}

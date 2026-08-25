@@ -113,7 +113,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 	}
 
 	pollInterval := cdnPollInterval
-	proxyClient := &http.Client{Timeout: 30 * time.Second}
+	proxyClient := &http.Client{Timeout: time.Duration(s.cfg.CDNProxyTimeoutSeconds) * time.Second}
 
 	for {
 		// Wait before fetch: shared per-item data cooldown (drain window).
@@ -198,6 +198,14 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 
 		status := proxyResp.StatusCode
 		ct := proxyResp.Header.Get("Content-Type")
+
+		if status == http.StatusRequestedRangeNotSatisfiable {
+			cr := proxyResp.Header.Get("Content-Range")
+			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
+			_, _ = s.correctFileSizeFromCDN416(file, cr, true)
+			return
+		}
 
 		switch classifyCDNDataResponse(status, ct) {
 		case cdnDataPermanent:

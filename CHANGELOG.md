@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.6-v0.8.3] - 2026-08-25
+
+### Fixed
+- Metadata sync no longer deletes previously-synced torrent or usenet files when that source’s list fetch fails. Prune is **per-source** and only runs after a successful fetch (ported from upstream v0.7.6). A slow/failed mylist page is retried in place (including HTTP 200 HTML error pages) instead of restarting the whole list from offset 0.
+- Landing page log-level selector shows the currently active level after refresh (in-memory `LogLevel` stays in sync with `LevelVar`; upstream v0.7.6).
+- TorBox account block on the landing page: plan name from numeric tier, `is_subscribed` / `premium_expires_at` JSON tags (API fields the old names never populated). Table trimmed to Plan, Email, Premium expires, Account created (upstream v0.8.0). Non-200 API errors include the TorBox error code in the message (e.g. `DATABASE_ERROR`).
+- CDN **416 Range Not Satisfiable**: correct SQLite file size from `Content-Range: bytes */N` and return 416 instead of 502 (rclone error budget), with `Content-Range: bytes */N` on the response so clients learn the true length. Cached CDN URL is kept; the next GET clamps to the new size. Does not write the requestdl negative cache (that would send the follow-up into hang/poll). Hang path corrects size then exits (headers already sent). Ported from upstream v0.8.0, with the negative-cache write omitted.
+
+### Added
+- Configurable `torbox.request_timeout_seconds` (default 90, was a hardcoded 30s client timeout), `sync.sync_timeout_seconds` (default 0 = no overall cap on manual Resync; previously hardcoded 60s), `cache.cdn_proxy_timeout_seconds` (default 30), `cache.cdn_url_429_backoff_seconds` (default 30). Ported from upstream v0.7.6.
+
+### Changed
+- Uptime / last-sync duration strings include days (e.g. `16d16h32m55s`) when the span is ≥ 24h (upstream v0.8.0).
+- Default `cache.circuit_breaker_window_seconds` is **600** (was 60) so slow, negative-cache-throttled failures still trip the breaker (upstream v0.8.0).
+- Full metadata sync skips if another full sync is already running (periodic vs Resync); `SyncItem` still waits on the mutex.
+
 ## [v0.7.5-v0.8.2] - 2026-07-25
 
 ### Fixed
@@ -218,7 +234,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.5-v0.8.2...HEAD
+[Unreleased]: /compare/v0.7.6-v0.8.3...HEAD
+[v0.7.6-v0.8.3]: /compare/v0.7.5-v0.8.2...v0.7.6-v0.8.3
 [v0.7.5-v0.8.2]: /compare/v0.7.4-v0.8.1...v0.7.5-v0.8.2
 [v0.7.4-v0.8.1]: /compare/v0.7.4-v0.8.0...v0.7.4-v0.8.1
 [v0.7.4-v0.8.0]: /compare/v0.7.3-v0.7.0...v0.7.4-v0.8.0

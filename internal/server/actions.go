@@ -181,6 +181,11 @@ func (s *Server) handleLogLevel(w http.ResponseWriter, r *http.Request) {
 	// This takes effect immediately for all slog handlers that reference it.
 	s.cfg.LevelVar.Set(parsedLevel)
 
+	// Keep the in-memory LogLevel string in sync so the landing page shows the
+	// currently-active level after a refresh (previously it only reflected the
+	// value read from config at startup).
+	s.cfg.LogLevel = newLevel
+
 	slog.Info("action: log level changed", "level", newLevel)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

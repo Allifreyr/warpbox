@@ -23,22 +23,35 @@ import (
 // ---------------------------------------------------------------------------
 
 // UserInfo represents the TorBox account details from GET /api/user/me.
+//
+// Field names match the real API response (verified against the official
+// TorBox JS SDK). The API returns the plan as an integer only (0=Free,
+// 1=Essential, 2=Pro, 3=Standard); subscription state is is_subscribed.
 type UserInfo struct {
-	ID                   int64   `json:"id"`
-	AuthID               string  `json:"auth_id"`
-	Email                string  `json:"email"`
-	Plan                 int     `json:"plan"`
-	PlanName             string  `json:"plan_name"`
-	Premium              bool    `json:"premium"`
-	PremiumExpires       *string `json:"premium_expires,omitempty"`
-	CreatedAt            string  `json:"created_at"`
-	UpdatedAt            string  `json:"updated_at"`
-	ReferralCode         string  `json:"referral_code"`
-	Registered           bool    `json:"registered"`
-	PremiumDownloadLimit int64   `json:"premium_download_limit"`
-	TotalDownloaded      int64   `json:"total_downloaded"`
-	TotalEgressed        int64   `json:"total_egressed"`
-	OverallRatio         float64 `json:"overall_ratio"`
+	ID               int64   `json:"id"`
+	AuthID           string  `json:"auth_id"`
+	Email            string  `json:"email"`
+	Plan             int     `json:"plan"`
+	IsSubscribed     bool    `json:"is_subscribed"`
+	PremiumExpiresAt *string `json:"premium_expires_at,omitempty"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
+}
+
+// PlanName returns a display name for UserInfo.Plan.
+func (u UserInfo) PlanName() string {
+	switch u.Plan {
+	case 0:
+		return "Free"
+	case 1:
+		return "Essential"
+	case 2:
+		return "Pro"
+	case 3:
+		return "Standard"
+	default:
+		return fmt.Sprintf("Plan %d", u.Plan)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -69,8 +82,16 @@ func NewClient(apiKey string) *Client {
 		baseURL: "https://api.torbox.app",
 		apiKey:  apiKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 90 * time.Second,
 		},
+	}
+}
+
+// SetTimeout overrides the per-request HTTP timeout. Applies the configured
+// torbox.request_timeout_seconds value; ignored if d <= 0.
+func (c *Client) SetTimeout(d time.Duration) {
+	if d > 0 {
+		c.httpClient.Timeout = d
 	}
 }
 
@@ -137,9 +158,11 @@ type Torrent struct {
 
 // ListFilesParams are optional query parameters for list endpoints.
 type ListFilesParams struct {
-	BypassCache bool
-	Offset      int
-	PageSize    int // Per-request page window; 0 uses defaultListPageSize
+	BypassCache   bool
+	Offset        int
+	PageSize      int           // Per-request page window; 0 uses defaultListPageSize
+	RetryAttempts int           // Per-page retries on IsRetryable errors; 0 = none
+	RetryBackoff  time.Duration // Base backoff between page retries (exponential)
 }
 
 // defaultListPageSize is the fallback per-request window when paginating mylist
@@ -184,36 +207,73 @@ func (c *Client) listGeneric(ctx context.Context, endpoint, label string, params
 
 		slog.Debug("torbox "+label, "offset", offset, "limit", pageSize)
 
-		body, err := c.do(req)
+		// Fetch this page, retrying in place on transient (IsRetryable) errors
+		// so a single slow/failed page does not abort the whole paginated list
+		// and force a restart from offset 0. Decode is inside the loop so a
+		// 200 HTML/error page is retried the same way as a 502.
+		var body []byte
+		var page []Torrent
+		for attempt := 0; attempt <= params.RetryAttempts; attempt++ {
+			if attempt > 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(params.RetryBackoff * time.Duration(1<<(attempt-1))):
+				}
+			}
+			body, err = c.do(req)
+			if err != nil {
+				if !IsRetryable(err) {
+					return nil, err
+				}
+				slog.Debug("torbox "+label+" page failed, retrying",
+					"offset", offset,
+					"attempt", attempt+1,
+					"error", err,
+				)
+				continue
+			}
+
+			var env apiResponse[[]Torrent]
+			if uerr := json.Unmarshal(body, &env); uerr != nil {
+				if len(body) > 0 && body[0] == '<' {
+					snippet := body
+					if len(snippet) > 200 {
+						snippet = snippet[:200]
+					}
+					slog.Warn("torbox "+label+": expected JSON, got non-JSON response",
+						"endpoint", endpoint,
+						"status", 200,
+						"body_preview", string(snippet),
+					)
+					slog.Debug("torbox "+label+": non-JSON response body",
+						"endpoint", endpoint,
+						"body", truncateBody(body),
+					)
+				}
+				err = fmt.Errorf("torbox: decoding %s response: %w", label, uerr)
+				if !IsRetryable(err) {
+					return nil, err
+				}
+				slog.Debug("torbox "+label+" page failed, retrying",
+					"offset", offset,
+					"attempt", attempt+1,
+					"error", err,
+				)
+				continue
+			}
+
+			if env.Error != nil && *env.Error != "" {
+				return nil, fmt.Errorf("torbox %s API error: %s", label, *env.Error)
+			}
+			page = env.Data
+			err = nil
+			break
+		}
 		if err != nil {
 			return nil, err
 		}
 
-		var env apiResponse[[]Torrent]
-		if err := json.Unmarshal(body, &env); err != nil {
-			if len(body) > 0 && body[0] == '<' {
-				snippet := body
-				if len(snippet) > 200 {
-					snippet = snippet[:200]
-				}
-				slog.Warn("torbox "+label+": expected JSON, got non-JSON response",
-					"endpoint", endpoint,
-					"status", 200,
-					"body_preview", string(snippet),
-				)
-				slog.Debug("torbox "+label+": non-JSON response body",
-					"endpoint", endpoint,
-					"body", truncateBody(body),
-				)
-			}
-			return nil, fmt.Errorf("torbox: decoding %s response: %w", label, err)
-		}
-
-		if env.Error != nil && *env.Error != "" {
-			return nil, fmt.Errorf("torbox %s API error: %s", label, *env.Error)
-		}
-
-		page := env.Data
 		all = append(all, page...)
 		slog.Debug("torbox "+label+" page", "offset", offset, "got", len(page), "total", len(all))
 
@@ -501,7 +561,7 @@ func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 		return nil, fmt.Errorf("torbox user/me API error: %s", *env.Error)
 	}
 
-	slog.Debug("torbox user/me result", "plan", env.Data.PlanName, "email", env.Data.Email)
+	slog.Debug("torbox user/me result", "plan", env.Data.Plan, "email", env.Data.Email)
 	return &env.Data, nil
 }
 
@@ -545,6 +605,16 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 			"endpoint", req.URL.Path,
 			"body", truncateBody(body),
 		)
+
+		// Surface the API error code (e.g. DATABASE_ERROR, BAD_TOKEN) so
+		// callers can classify failures. Keep "unexpected status 5" so
+		// IsRetryable still treats 5xx as transient.
+		var env struct {
+			Error *string `json:"error"`
+		}
+		if json.Unmarshal(body, &env) == nil && env.Error != nil && *env.Error != "" {
+			return nil, fmt.Errorf("torbox: unexpected status %d (%s)", resp.StatusCode, *env.Error)
+		}
 		return nil, fmt.Errorf("torbox: unexpected status %d", resp.StatusCode)
 	}
 

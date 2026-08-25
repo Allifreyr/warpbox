@@ -336,6 +336,45 @@ func (s *Store) GetFileByFileID(source FileSource, fileID int64) (*FileRecord, e
 	return &f, nil
 }
 
+// SetFileSize corrects a file record's size (used when the CDN reports a true
+// size via a 416 Content-Range: bytes */N header).
+// Retries up to 3 times with exponential backoff (100ms, 200ms, 400ms) if the
+// database is locked due to a concurrent write (e.g. sync worker prune).
+func (s *Store) SetFileSize(internalID, size int64) error {
+	start := time.Now()
+
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		_, err = s.db.Exec(`
+			UPDATE files SET size = ?, updated = datetime('now')
+			WHERE id = ?
+		`, size, internalID)
+		if err == nil {
+			slog.Debug("db write duration", "method", "SetFileSize", "duration_ms", time.Since(start).Milliseconds())
+			return nil
+		}
+		if isLockedError(err) {
+			s.dbLockErrors.Add(1)
+			if attempt < 2 {
+				backoff := time.Duration(100*(1<<attempt)) * time.Millisecond
+				slog.Debug("SetFileSize: database locked, retrying",
+					"attempt", attempt+1,
+					"backoff_ms", backoff.Milliseconds(),
+				)
+				time.Sleep(backoff)
+				continue
+			}
+			slog.Warn("SetFileSize: database locked, exhausted retries",
+				"internal_id", internalID,
+				"attempts", 3,
+			)
+		}
+	}
+
+	slog.Debug("db write duration", "method", "SetFileSize", "duration_ms", time.Since(start).Milliseconds(), "error", err)
+	return fmt.Errorf("setting file size: %w", err)
+}
+
 // SetCDNURL stores a CDN download URL for a file identified by its internal ID.
 // Retries up to 3 times with exponential backoff (100ms, 200ms, 400ms) if the
 // database is locked due to a concurrent write (e.g. sync worker prune).
@@ -524,14 +563,18 @@ func (s *Store) GetNextSyncTag() (int64, error) {
 	return tag, nil
 }
 
-// PruneBySyncTag deletes all file records whose sync_tag does NOT match the
-// given tag (i.e. they were not touched by this sync cycle). Records with
-// sync_tag = 0 (legacy/unsynced) are also deleted.
+// PruneBySyncTag deletes file records of the given source whose sync_tag does
+// NOT match the given tag (i.e. they were not touched by this sync cycle).
+// Records with sync_tag = 0 (legacy/unsynced) of that source are also deleted.
+//
+// Scoping by source is important: the sync only prunes a source when that
+// source's fetch succeeded, so a failed fetch can never delete the other
+// source's (or its own) previously-synced rows.
 //
 // Deletes are performed in batches of 250 rows to avoid holding the SQLite
 // writer lock for too long, which would starve concurrent writes from
 // SetCDNURL. Returns the total number of records deleted across all batches.
-func (s *Store) PruneBySyncTag(tag int64) (int, error) {
+func (s *Store) PruneBySyncTag(tag int64, source FileSource) (int, error) {
 	if tag <= 0 {
 		return 0, fmt.Errorf("refusing to prune with invalid sync tag %d", tag)
 	}
@@ -542,9 +585,9 @@ func (s *Store) PruneBySyncTag(tag int64) (int, error) {
 	for {
 		result, err := s.db.Exec(`
 			DELETE FROM files WHERE id IN (
-				SELECT id FROM files WHERE sync_tag != ? OR sync_tag = 0 LIMIT ?
+				SELECT id FROM files WHERE source = ? AND (sync_tag != ? OR sync_tag = 0) LIMIT ?
 			)
-		`, tag, batchSize)
+		`, source, tag, batchSize)
 		if err != nil {
 			if isLockedError(err) {
 				s.dbLockErrors.Add(1)

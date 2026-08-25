@@ -13,6 +13,9 @@ simultaneous streams. The suggestions below are starting points, not rules.
 |-----|---------|-------|--------------------------|
 | `throttle.requests_per_minute` | 250 | 10–1000 | You want more headroom below TorBox's 300 RPM limit, or you need faster sync throughput |
 | `cache.max_cdn_connections` | 4 | 1–64 | Multiple simultaneous streams compete for CDN slots |
+| `cache.cdn_proxy_timeout_seconds` | 30 | 5–600 | CDN byte-range proxy hangs or times out too early |
+| `cache.cdn_url_429_backoff_seconds` | 30 | 1–300 | TorBox 429s during requestdl need more/less breathing room |
+| `torbox.request_timeout_seconds` | 90 | 5–600 | Mylist/requestdl calls abort too early on a slow API |
 | `cache.cdn_url_ttl_minutes` | 120 | 1–1440 | You see `stale CDN URL detected` warnings — the URL is expiring before the TTL |
 | `cache.cdn_url_auto_repair` | true | true/false | You'd rather serve errors than wait for repair (not recommended) |
 | `cache.cdn_url_retry_attempts` | 1 | 0–10 | TorBox API is flaky — more retries increase success rate but burn rate budget |
@@ -21,13 +24,14 @@ simultaneous streams. The suggestions below are starting points, not rules.
 | `cache.negative_cache_ttl_seconds` | 30 | 1–300 | Plex retry storms are still hitting the API — lengthen the TTL |
 | `cache.negative_cache_max_entries` | 5000 | 100–50000 | Memory is tight (lower), or you have many files and see cache thrashing (raise) |
 | `cache.circuit_breaker_failures` | 5 | 1–100 | A single bad torrent is consuming too much rate budget — tighten this |
-| `cache.circuit_breaker_window_seconds` | 60 | 1–3600 | Failures are spread out over longer periods — widen the window |
+| `cache.circuit_breaker_window_seconds` | 600 | 1–3600 | Failures are spread out over longer periods — widen the window |
 | `cache.circuit_breaker_stale_minutes` | 5 | 1–60 | You want quarantined torrents to recover faster or slower |
 | `cache.circuit_breaker_max_entries` | 2000 | 50–20000 | Memory is tight (lower), or you have many active torrents (raise) |
 | `cache.cleanup_interval_seconds` | 60 | 10–3600 | Stats recording also uses this interval — see interactions below |
 | `sync.interval_minutes` | 5 | 1–1440 | New content shows up too slowly for your workflow |
 | `sync.retry_attempts` | 3 | 0–10 | TorBox API is flaky during sync — increase for more resilience |
 | `sync.retry_backoff` | 1s | 1–60s | Longer pauses between retries to avoid hammering the API |
+| `sync.sync_timeout_seconds` | 0 | 0 or 30–3600 | You want a hard cap on a manual landing-page Resync (0 = no overall cap) |
 | `sync.list_page_size` | 5000 | 1–10000 | You want to tweak API call frequency vs. pagination safety |
 | `stats.retention_hours` | 24 | 1–720 | You want longer history on the sparkline charts |
 | `stats.chart_minutes` | 60 | 1–1440 | You want the landing page chart to show a shorter or longer window |
@@ -60,13 +64,15 @@ predictable behaviour.
 
 ### Sync retry
 
-When the TorBox API returns transient errors (502, timeout, HTML error pages) during
-a sync cycle, the sync worker retries `ListTorrents` and `ListUsenet` up to
-`sync.retry_attempts` times with exponential backoff: `retry_backoff * 1s, * 2s, * 4s`.
-A value of 0 disables retries — the sync fails immediately on the first transient error.
+When the TorBox API returns transient errors (502, timeouts, HTML error pages) during
+a sync cycle, **each mylist page** is retried in place up to `sync.retry_attempts`
+times with exponential backoff: `retry_backoff * 1s, * 2s, * 4s`. A failed page no
+longer restarts pagination from offset 0. A value of 0 disables retries — that page
+fails immediately on the first transient error, and that source is not pruned.
 
-The retry only applies to errors that `torbox.IsRetryable()` considers transient.
-Permanent errors (401 unauthorized, 404 not found, API-level errors) are not retried.
+The retry only applies to errors that `torbox.IsRetryable()` considers transient
+(including HTTP 200 with an HTML body). Permanent errors (401 unauthorized, 404 not
+found, API-level errors) are not retried.
 
 ### CDN URL TTL
 

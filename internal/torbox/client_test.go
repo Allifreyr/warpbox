@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestClient(serverURL, apiKey string) *Client {
@@ -440,6 +441,38 @@ func TestListPaginatesPastCap(t *testing.T) {
 	}
 }
 
+func TestListPageRetriesHTML200(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>cloudflare</html>"))
+			return
+		}
+		json.NewEncoder(w).Encode(apiResponse[[]Torrent]{
+			Data:    []Torrent{{ID: 1, Name: "ok"}},
+			Success: boolPtr(true),
+		})
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "key")
+	got, err := client.ListTorrents(context.Background(), ListFilesParams{
+		RetryAttempts: 1,
+		RetryBackoff:  10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("ListTorrents: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2 (HTML page should be retried)", calls)
+	}
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Errorf("got %+v, want one torrent id 1", got)
+	}
+}
+
 func TestGetTorrentByID_success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/api/torrents/mylist" {
@@ -517,5 +550,34 @@ func TestGetUsenetByID_listFallback(t *testing.T) {
 	}
 	if item.ID != 7 {
 		t.Errorf("id = %d", item.ID)
+	}
+}
+
+func TestUserInfoPlanName(t *testing.T) {
+	if got := (UserInfo{Plan: 2}).PlanName(); got != "Pro" {
+		t.Errorf("Plan 2 = %q, want Pro", got)
+	}
+	if got := (UserInfo{Plan: 0}).PlanName(); got != "Free" {
+		t.Errorf("Plan 0 = %q, want Free", got)
+	}
+}
+
+func TestDo_surfacesAPIErrorCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"DATABASE_ERROR","success":false}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, "key")
+	_, err := client.ListTorrents(context.Background(), ListFilesParams{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "DATABASE_ERROR") {
+		t.Errorf("error %q should include DATABASE_ERROR", err)
+	}
+	if !IsRetryable(err) {
+		t.Error("5xx with error code should still be retryable")
 	}
 }

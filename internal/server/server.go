@@ -137,7 +137,7 @@ type Config struct {
 
 	// Circuit breaker settings.
 	CircuitBreakerFailures  int // Max failures in window; default 5
-	CircuitBreakerWindowSec int // Sliding window seconds; default 60
+	CircuitBreakerWindowSec int // Sliding window seconds; default 600
 	CircuitBreakerStaleMin  int // Stale duration minutes; default 5
 
 	// Memory management settings.
@@ -147,6 +147,10 @@ type Config struct {
 
 	// CDN proxy settings.
 	MaxCDNConnections int // Max concurrent CDN proxy connections; default 4
+
+	// CDN timeout settings (seconds).
+	CDNProxyTimeoutSeconds  int // Timeout for proxying a CDN byte range; default 30
+	CDNURL429BackoffSeconds int // Backoff for a 429 when fetching a CDN URL; default 30
 
 	// Path to config file for runtime log level toggle.
 	ConfigPath string
@@ -175,6 +179,12 @@ func New(cfg Config, store *metadata.Store, torBox *torbox.Client, queue *thrott
 	maxConns := cfg.MaxCDNConnections
 	if maxConns < 1 {
 		maxConns = 4
+	}
+	if cfg.CDNProxyTimeoutSeconds <= 0 {
+		cfg.CDNProxyTimeoutSeconds = 30
+	}
+	if cfg.CDNURL429BackoffSeconds <= 0 {
+		cfg.CDNURL429BackoffSeconds = 30
 	}
 
 	virtualFilters, vpErr := buildFilters(cfg.VirtualPaths)

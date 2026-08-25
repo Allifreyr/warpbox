@@ -166,7 +166,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 	// actually limits concurrent TorBox CDN opens (D-016 / D-015c).
 	slog.Debug("GET: proxying from CDN", "id", file.ID, "offset", srvRange.Start)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: time.Duration(s.cfg.CDNProxyTimeoutSeconds) * time.Second}
 	maxAttempts := s.cfg.CDNURLRepairRetries + 1
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -187,6 +187,22 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 			slog.Error("GET: CDN proxy request failed", "error", err)
 			// Network error — do not retry.
 			http.Error(w, "CDN proxy error", http.StatusBadGateway)
+			return
+		}
+
+		// 416 Range Not Satisfiable: CDN file is smaller than DB size.
+		// Correct stored size and return 416 (not 502) so rclone does not
+		// burn maxErrorCount. Include Content-Range so clients learn N.
+		// The cached CDN URL is kept; the next GET clamps to the true size.
+		if proxyResp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			cr := proxyResp.Header.Get("Content-Range")
+			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
+			if n, ok := s.correctFileSizeFromCDN416(file, cr, false); ok {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", n))
+				w.Header().Set("Accept-Ranges", "bytes")
+			}
+			http.Error(w, "requested range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
 			return
 		}
 
@@ -326,6 +342,51 @@ type httpRange struct {
 	Start  int64
 	End    int64
 	Length int64
+}
+
+// parseCDNTrueSize parses a CDN 416 "Content-Range: bytes */<size>" header.
+func parseCDNTrueSize(contentRange string) (int64, bool) {
+	star := strings.Index(contentRange, "*/")
+	if star < 0 {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(contentRange[star+2:]), 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// correctFileSizeFromCDN416 updates SQLite when the CDN reports a true size
+// via 416 Content-Range: bytes */N. The cached CDN URL is kept so the next
+// GET can parseRange against the new size. Does not write the requestdl
+// negative cache — a size mismatch is not a URL-fetch failure.
+// hang=true only logs (headers already sent). Returns the parsed size.
+func (s *Server) correctFileSizeFromCDN416(file *metadata.FileRecord, contentRange string, hang bool) (int64, bool) {
+	n, ok := parseCDNTrueSize(contentRange)
+	if !ok {
+		if hang {
+			slog.Warn("GET (hang): CDN returned 416 (range not satisfiable)", "path", file.Path)
+		}
+		return 0, false
+	}
+	if n == file.Size {
+		if hang {
+			slog.Warn("GET (hang): CDN returned 416 (range not satisfiable)", "path", file.Path)
+		}
+		return n, true
+	}
+	msg := "CDN size mismatch, correcting file size"
+	if hang {
+		msg = "GET (hang): CDN size mismatch, correcting file size"
+	}
+	slog.Warn(msg, "path", file.Path, "db_size", file.Size, "cdn_size", n)
+	if err := s.store.SetFileSize(file.ID, n); err != nil {
+		slog.Error("GET: failed to correct file size", "path", file.Path, "error", err)
+		return n, true
+	}
+	file.Size = n
+	return n, true
 }
 
 // parseRange parses a "bytes=start-end" Range header and returns the computed
