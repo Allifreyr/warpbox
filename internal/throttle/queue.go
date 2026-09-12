@@ -15,22 +15,76 @@ const queueBufferSize = 1024
 
 // Request represents a queued API call.
 type Request struct {
-	Label    string
-	Execute  func(ctx context.Context) error
+	Label   string
+	Execute func(ctx context.Context) error
+}
+
+// Limiter paces the start of API calls. Multiple queues can share one Limiter
+// so the aggregate start rate never exceeds requestsPerMinute, while each
+// queue still runs its own processLoop. 429s are counted here (once, globally)
+// rather than on each queue.
+type Limiter struct {
+	mu       sync.Mutex
+	rate     time.Duration
+	lastCall time.Time
+	http429  int64
+}
+
+// NewLimiter creates a shared rate limiter that paces call starts.
+func NewLimiter(requestsPerMinute int) *Limiter {
+	return &Limiter{
+		rate: time.Minute / time.Duration(requestsPerMinute),
+	}
+}
+
+// Wait blocks until a start slot is available, then reserves it.
+// Consecutive starts (across all queues sharing this limiter) are spaced
+// at least rate apart. Returns promptly on context cancellation.
+func (l *Limiter) Wait(ctx context.Context) {
+	for {
+		l.mu.Lock()
+		now := time.Now()
+		elapsed := now.Sub(l.lastCall)
+		if elapsed >= l.rate {
+			l.lastCall = now
+			l.mu.Unlock()
+			return
+		}
+		wait := l.rate - elapsed
+		l.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
+}
+
+// Record429 increments the global 429 counter.
+func (l *Limiter) Record429() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.http429++
+}
+
+// HTTP429Calls returns the lifetime 429 count.
+func (l *Limiter) HTTP429Calls() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.http429
 }
 
 // Queue is a rate-limited, blocking queue for TorBox API requests.
 type Queue struct {
-	mu         sync.Mutex
-	items      chan Request
-	rate       time.Duration
-	lastCall   time.Time
-	totalCalls int64
-	callWindow []time.Time
+	mu      sync.Mutex
+	items   chan Request
+	limiter *Limiter
+	rate    time.Duration
 
+	totalCalls      int64
+	callWindow      []time.Time
 	successfulCalls int64
 	failedCalls     int64
-	http429Calls    int64
 }
 
 // Stats returns throttle statistics for the landing page.
@@ -43,12 +97,23 @@ type Stats struct {
 	RequestsPerMinute int
 }
 
-// NewQueue creates a new throttle queue.
+// NewQueue creates a self-paced throttle queue (private limiter).
 // requestsPerMinute sets the maximum sustained call rate.
 func NewQueue(requestsPerMinute int) *Queue {
+	return NewQueueWithLimiter(requestsPerMinute, nil)
+}
+
+// NewQueueWithLimiter creates a throttle queue paced by the given limiter.
+// If limiter is nil, the queue gets its own private limiter. Sharing a
+// limiter between queues enforces the collective requestsPerMinute.
+func NewQueueWithLimiter(requestsPerMinute int, shared *Limiter) *Queue {
+	if shared == nil {
+		shared = NewLimiter(requestsPerMinute)
+	}
 	return &Queue{
-		rate:  time.Minute / time.Duration(requestsPerMinute),
-		items: make(chan Request, queueBufferSize),
+		items:   make(chan Request, queueBufferSize),
+		limiter: shared,
+		rate:    time.Minute / time.Duration(requestsPerMinute),
 	}
 }
 
@@ -68,12 +133,12 @@ func (q *Queue) Stats() Stats {
 	}
 
 	return Stats{
-		TotalCalls:         q.totalCalls,
-		SuccessfulCalls:    q.successfulCalls,
-		FailedCalls:        q.failedCalls,
-		HTTP429Calls:       q.http429Calls,
-		CallsLastMinute:    recent,
-		RequestsPerMinute:  int(time.Minute / q.rate),
+		TotalCalls:        q.totalCalls,
+		SuccessfulCalls:   q.successfulCalls,
+		FailedCalls:       q.failedCalls,
+		HTTP429Calls:      q.limiter.HTTP429Calls(),
+		CallsLastMinute:   recent,
+		RequestsPerMinute: int(time.Minute / q.rate),
 	}
 }
 
@@ -92,20 +157,17 @@ func (q *Queue) processLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case r := <-q.items:
-			// Enforce minimum spacing between calls.
-			elapsed := time.Since(q.lastCall)
-			if elapsed < q.rate {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(q.rate - elapsed):
-				}
+			// Pace the start through the (possibly shared) limiter. A long
+			// Execute on this queue does not delay another queue sharing
+			// the same limiter.
+			q.limiter.Wait(ctx)
+			if ctx.Err() != nil {
+				return
 			}
 
 			err := r.Execute(ctx)
 
 			q.mu.Lock()
-			q.lastCall = time.Now()
 			q.totalCalls++
 			if err != nil {
 				q.failedCalls++
@@ -115,9 +177,10 @@ func (q *Queue) processLoop(ctx context.Context) {
 			} else {
 				q.successfulCalls++
 			}
-			q.callWindow = append(q.callWindow, q.lastCall)
+			now := time.Now()
+			q.callWindow = append(q.callWindow, now)
 			// Keep the window trimmed to roughly the last 60 seconds.
-			cutoff := q.lastCall.Add(-60 * time.Second)
+			cutoff := now.Add(-60 * time.Second)
 			for len(q.callWindow) > 0 && q.callWindow[0].Before(cutoff) {
 				q.callWindow = q.callWindow[1:]
 			}
@@ -126,11 +189,9 @@ func (q *Queue) processLoop(ctx context.Context) {
 	}
 }
 
-// Record429 increments the 429 counter under lock.
+// Record429 increments the 429 counter on the (possibly shared) limiter.
 func (q *Queue) Record429() {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.http429Calls++
+	q.limiter.Record429()
 }
 
 // Start launches the processing loop in a background goroutine.

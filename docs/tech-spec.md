@@ -49,20 +49,22 @@ If you change the code, update this spec.
    - Auto-runs schema migrations (`CREATE TABLE IF NOT EXISTS`)
    - `defer metadataStore.Close()` — closed on process exit
 
-10. **Throttle queue.** `throttle.NewQueue(cfg.Throttle.RequestsPerMinute)`:
-    - Computes inter-request spacing: `rate = time.Minute / RPM`
-    - Creates buffered channel (capacity 1024)
-    - `queue.Start(ctx)` — launches the `processLoop` goroutine
+10. **Throttle limiter + queues.** One shared limiter paces the *start* of every TorBox API call, so `throttle.requests_per_minute` is a collective cap:
+    - `limiter := throttle.NewLimiter(cfg.Throttle.RequestsPerMinute)`
+    - `requestQueue := throttle.NewQueueWithLimiter(..., limiter)` — playback `requestdl`
+    - `syncQueue := throttle.NewQueueWithLimiter(..., limiter)` — metadata sync (and `SyncItem`)
+    - Each queue has a buffered channel (capacity 1024) and its own `processLoop`, so a slow sync call never blocks playback
+    - `requestQueue.Start(ctx)` and `syncQueue.Start(ctx)`
 
 11. **TorBox API client.** `torbox.NewClient(cfg.TorBox.APIKey)`:
     - Hardcoded base URL: `"https://api.torbox.app"`
     - HTTP client timeout from `torbox.request_timeout_seconds` (default 90s) via `SetTimeout`
-    - Wires `HTTP429Callback`: `func() { throttleQueue.Record429() }` — called when the TorBox API returns HTTP 429
+    - Wires `HTTP429Callback`: `limiter.Record429` — counted once on the shared limiter
 
 12. **Signal context.** `ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM); defer stop()` — the root context is cancelled when SIGINT or SIGTERM is received. All components derive their contexts from this root.
 
-13. **Sync worker.** `metadata.NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, syncTimeout, overrideTags)`:
-    - Stores references to the metadata store, TorBox client, throttle queue, interval, and limit
+13. **Sync worker.** `metadata.NewSyncWorker(store, client, syncQueue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, syncTimeout, overrideTags)`:
+    - Stores references to the metadata store, TorBox client, sync throttle queue, interval, and limit
     - Wires library hooks: `syncWorker.OnItemsAdded` and `syncWorker.OnItemsRemoved` are set to call `runItemsHook(libCfg.OnItemsAdded, libCfg.HookTimeoutSec, items, hookWorkDir)` when configured (`hookWorkDir` = directory containing the config file)
     - `go syncWorker.Start(ctx)` — runs the periodic sync loop in a background goroutine
 
@@ -80,12 +82,13 @@ If you change the code, update this spec.
     - **Auth:** `AuthEnabled`, `AuthUsername`, `AuthPassword`
     - **Library:** `VirtualPaths`
 
-16. **Server creation.** `server.New(cfg, store, torBox, queue)`:
+16. **Server creation.** `server.New(cfg, store, torBox, requestQueue)`:
     - Creates `chi.NewRouter()`
     - Pre-fills CDN connection semaphore with `maxConns` tokens
     - Builds virtual path filters from config
     - Registers all HTTP routes (see Section 2)
     - Starts the cleanup goroutine (see Section 7)
+    - `srv.SetSyncQueue(syncQueue)` so landing-page/stats counters aggregate both queues
 
 17. **Sync status callback.** `srv.SetSyncStatus(syncWorker.Status)` — wires the sync worker's `Status()` method so the landing page can show sync state.
 
@@ -102,7 +105,7 @@ If you change the code, update this spec.
 - On signal, `srv.Shutdown(ctx)` is called with a 30-second timeout context, which invokes `http.Server.Shutdown()` — draining active connections and stopping the listener.
 - The `defer metadataStore.Close()` runs, flushing WAL.
 - The sync worker's loop exits when its derived context is cancelled (via context propagation from the signal context).
-- The throttle queue's `processLoop` goroutine exits when its context is cancelled.
+- The throttle queues' `processLoop` goroutines exit when their contexts are cancelled.
 
 ### Library Hook Execution (`runItemsHook`)
 
@@ -259,7 +262,7 @@ Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
 
 ### CDN Proxy (`streamFileContent`)
 
-1. **Get/refresh CDN URL.** If no cached URL, fetch via throttle queue. Cache with `CDNTtlMinutes` TTL (default 120) if set.
+1. **Get/refresh CDN URL.** If no cached URL, fetch via the playback throttle queue. Cache with `CDNTtlMinutes` TTL (default 120) if set.
 
 2. **Range parsing.** `parseRange(rangeHeader, file.Size)`:
    - Format: `"bytes=start-end"` or suffix `"bytes=-N"` (last N bytes)
@@ -419,7 +422,7 @@ The core request executor:
 
 1. `c.httpClient.Do(req)` — network error returns `"torbox: request failed"`
 2. `io.ReadAll(resp.Body)` — body always closed via `defer resp.Body.Close()` before returning
-3. **429 detection:** If `resp.StatusCode == 429`, calls `c.HTTP429Callback()` (wired in main.go to `throttleQueue.Record429()`) — BEFORE returning the error
+3. **429 detection:** If `resp.StatusCode == 429`, calls `c.HTTP429Callback()` (wired in main.go to `limiter.Record429`) — BEFORE returning the error
 4. **Non-200:** Logs a warning with status, URL path (not full URL — avoids leaking API key in query params), and truncated body (512 bytes max). Returns `fmt.Errorf("torbox: unexpected status %d", code)`
 5. **200:** Returns body bytes
 
@@ -440,7 +443,7 @@ The core request executor:
 
 `SyncWorker` manages the periodic TorBox → SQLite synchronisation loop:
 
-- **`NewSyncWorker(store, client, queue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, syncTimeout, overrideTags)`** — stores references. `retryAttempts` (default 3) is passed into `ListFilesParams` for per-page mylist retries. `retryBackoff` (default 1s) is the base exponential backoff duration. `syncTimeout` (default 0) caps a manual `SyncNow`; 0 means no overall cap. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. `overrideTags` is the allowlist of TorBox tags stored in `filter_tags`; main passes `library.ExpandOverrideTags` (user `override_tags` default `["rename"]` plus automatic `forced{virtual_path_name}` for each configured path). Does not start.
+- **`NewSyncWorker(store, client, syncQueue, interval, listPageSize, bypassCache, retryAttempts, retryBackoff, syncTimeout, overrideTags)`** — stores references. `retryAttempts` (default 3) is passed into `ListFilesParams` for per-page mylist retries. `retryBackoff` (default 1s) is the base exponential backoff duration. `syncTimeout` (default 0) caps a manual `SyncNow`; 0 means no overall cap. `listPageSize` (default 5000) controls the per-request page window when paginating mylist API calls. `overrideTags` is the allowlist of TorBox tags stored in `filter_tags`; main passes `library.ExpandOverrideTags` (user `override_tags` default `["rename"]` plus automatic `forced{virtual_path_name}` for each configured path). Does not start. `syncQueue` shares a rate limiter with the playback queue.
 - **`Start(ctx)`** — stores `ctx` as `parentCtx`, creates a derived `cancelCtx`, calls `runLoop(ctx)`, closes `loopDone` channel on exit.
 - **`Stop()`** — calls the cancel function on the current loop, waits up to 90 seconds for `loopDone` to close. Safe to call multiple times or before `Start`.
 - **`Restart()`** — calls `Stop()`, creates a new derived context from `parentCtx`, launches `runLoop` in a new goroutine.
@@ -458,7 +461,7 @@ The core request executor:
 
 **1. Snapshot for change detection.** If `OnItemsAdded` or `OnItemsRemoved` hooks are configured, `store.ListItemDirs()` is called before the sync to capture the current item set.
 
-**2. Parallel fetch with per-page retry.** Two API calls are enqueued via the throttle queue simultaneously. Retry lives inside `listGeneric` so a failed page is retried in place:
+**2. Parallel fetch with per-page retry.** Two API calls are enqueued via the **sync** throttle queue simultaneously. Retry lives inside `listGeneric` so a failed page is retried in place:
    - `ListTorrents(ctx, ListFilesParams{RetryAttempts, RetryBackoff, ...})`
    - `ListUsenet(ctx, ...)` — same retry pattern
    - Only transient errors (defined by `torbox.IsRetryable()`, including 200 HTML) trigger a retry — non-retryable errors (401, 404, API-level errors) bail immediately
@@ -801,7 +804,7 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 #### 4. `throttle`
 | Key | Type | Default | Validation | Description |
 |-----|------|---------|------------|-------------|
-| `requests_per_minute` | int | `250` | 10–1000 | TorBox API rate limit |
+| `requests_per_minute` | int | `250` | 10–1000 | Collective TorBox API rate limit (metadata sync + playback) |
 
 #### 5. `logging`
 | Key | Type | Default | Validation | Description |
@@ -966,7 +969,7 @@ This adapter is applied to protected routes via `s.mux.With(requireAuth).Get(...
 
 ### Design
 
-Token-bucket rate limiter implemented as a blocking request queue. The design philosophy is: **never fail fast**. Burst traffic from Plex (scanning an entire library) is queued and trickled to the TorBox API at a safe rate. If the queue is full, `Enqueue` blocks until space is available — the HTTP handler waits, not the caller.
+Start-paced rate limiter implemented as **two** blocking request queues that share one `Limiter`. The design philosophy is: **never fail fast**, and **never let metadata sync starve playback**. Burst traffic from Plex is queued on the playback queue and trickled to the TorBox API at a safe rate. Metadata sync runs on a separate queue with its own `processLoop`, so a slow usenet mylist page cannot delay `requestdl`. The shared limiter keeps `requests_per_minute` a collective cap. If a queue is full, `Enqueue` blocks until space is available — the HTTP handler waits, not the caller.
 
 ### Rate Calculation
 
@@ -981,16 +984,22 @@ rate = time.Minute / time.Duration(requestsPerMinute)
 ### Queue Structure
 
 ```go
+type Limiter struct {
+    mu       sync.Mutex
+    rate     time.Duration // start-to-start minimum spacing
+    lastCall time.Time
+    http429  int64         // global 429 count (not per-queue)
+}
+
 type Queue struct {
-    mu         sync.Mutex
-    items      chan Request       // buffered channel, capacity 1024
-    rate       time.Duration      // inter-request minimum spacing
-    lastCall   time.Time
-    totalCalls int64
-    callWindow []time.Time
+    mu              sync.Mutex
+    items           chan Request  // buffered channel, capacity 1024
+    limiter         *Limiter      // private, or shared across queues
+    rate            time.Duration // for Stats().RequestsPerMinute
+    totalCalls      int64
+    callWindow      []time.Time
     successfulCalls int64
     failedCalls     int64
-    http429Calls    int64
 }
 ```
 
@@ -1013,14 +1022,13 @@ func (q *Queue) Enqueue(r Request) {
 Runs in a background goroutine started by `Start(ctx)`:
 
 1. **Receive:** `select { case <-ctx.Done(): return | case r := <-q.items: }` — blocks on empty queue, exits on shutdown
-2. **Throttle:** `elapsed := time.Since(q.lastCall)` — if less than `rate` has elapsed, `time.After(rate - elapsed)` waits (or context cancellation)
-3. **Execute:** `err := r.Execute(ctx)` — runs the API call
+2. **Throttle:** `limiter.Wait(ctx)` — start-to-start spacing on the (possibly shared) limiter. If `ctx` is cancelled while waiting, the loop exits without running Execute.
+3. **Execute:** `err := r.Execute(ctx)` — runs the API call. A long Execute does not hold the limiter, so the other queue can start.
 4. **Stats update** (under lock):
-   - `lastCall = time.Now()`
    - `totalCalls++`
    - On error: `failedCalls++`; logged at DEBUG only (caller owns ERROR-level logging)
    - On success: `successfulCalls++`
-   - Append `lastCall` to `callWindow`
+   - Append now to `callWindow`
    - Trim `callWindow` to entries within the last 60 seconds (sliding window)
 
 ### Stats
@@ -1041,13 +1049,13 @@ type Stats struct {
 ### 429 Detection
 
 - TorBox client's `do()` calls `HTTP429Callback()` when `resp.StatusCode == 429`
-- Wired in `main.go`: `torBoxClient.HTTP429Callback = func() { throttleQueue.Record429() }`
-- `Record429()` simply increments `http429Calls` under lock.
+- Wired in `main.go`: `torBoxClient.HTTP429Callback = limiter.Record429`
+- Counted once on the shared limiter. `Queue.Record429` forwards to the limiter. Server `throttleStats()` does not sum 429s across queues (that would double-count).
 
 ### Stress Characteristics
 
 - **Maximum sustained rate:** 250 RPM default, up to 1000 RPM configured.
 - **Burst absorption:** 1024-item buffer allows absorbing spikes. At 240ms spacing, a full buffer represents ~4 minutes of queued work.
 - **Blocking behaviour:** When buffer is full, `handleGet` (which calls `Enqueue`) blocks. Plex/jellyfin sees a slow response but not an error. This is intentional — Plex counts errors (`maxErrorCount=10`) far more severely than slow responses.
-- **Concurrency:** Single goroutine processes all requests sequentially. The throttle itself is not a bottleneck (each request involves a TorBox API round-trip in the 100–500ms range).
-- **Backpressure:** The `processLoop` is the only consumer. Downstream components (sync worker, GET handler) all route through `Enqueue`. There is no priority queue or request differentiation.
+- **Concurrency:** Two `processLoop` goroutines (sync + playback). Each queue still serializes its own requests. The shared limiter paces *starts* collectively.
+- **Backpressure:** Downstream components route through the appropriate queue (`syncQueue` for metadata, `requestQueue` for `requestdl`). There is no priority queue.

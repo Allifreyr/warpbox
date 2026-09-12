@@ -218,3 +218,15 @@ This page documents all significant architectural and technical decisions made d
 - **Rationale:** The database is a cache derived from the TorBox API — it self-heals on the next sync cycle. A destructive schema upgrade is simpler and less risky than a table copy/rename migration. Since the DB holds no unique data (everything comes from the API), auto-recreate is safe.
 - **Config impact:** None. The landing page now shows both total and unique file counts.
 - **Implementation:** `internal/metadata/store.go` (schema, queries, migration), `internal/server/get.go` (CDN fallback), `internal/server/landing.go` (dual counts), `internal/tools/dbinspect/main.go` (updated checks).
+
+## D-023: Split the throttle queue so metadata sync cannot starve playback requestdl
+
+- **Date:** 2026-08-25
+- **Context:** All TorBox API calls went through one serialized throttle queue. The metadata sync worker and the playback path (`requestdl` for CDN URLs) shared that single `processLoop`. A slow usenet `mylist` pagination occupies the loop for the duration of the HTTP call, so a cold play of an uncached file waited behind the sync and rclone/Plex timed out ("can't play"). Warm plays (cached CDN URL) skipped the queue. The queue is a pacing queue, not a concurrency-aware limiter — a slow call blocks everything behind it.
+- **Decision:** Two independent queues, one for metadata sync (`syncQueue`, including `SyncItem`) and one for playback (`requestQueue`), paced by a single shared `throttle.Limiter` so `throttle.requests_per_minute` remains a collective cap:
+  - `Limiter` owns start-to-start spacing and the global 429 counter (`Record429` once from `HTTP429Callback`).
+  - `NewQueue` stays self-paced (private limiter) for tests; production uses `NewQueueWithLimiter`.
+  - Server `throttleStats()` sums call totals across queues and does **not** sum 429s (both queues read the same limiter count).
+- **Rationale:** Starvation was queue-sharing wiring, not a need for concurrent requestdl. Sharing one limiter avoids a 2× rate. Each queue still serializes its own requests. 429s live on the limiter so we do not double-count (unlike recording on both queues and taking `max()`).
+- **Alternatives considered:** Token bucket with in-flight concurrency — deferred (higher 429 risk). Priority queue — more invasive. Per-page sync enqueue — optional follow-on.
+- **Implementation:** `internal/throttle/queue.go`, `cmd/warpbox/main.go`, `internal/server/server.go`, `internal/server/landing.go`, plus tests.

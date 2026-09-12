@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Metadata sync no longer blocks playback: CDN download-link (`requestdl`) calls run on their own throttle queue, so a slow usenet-pagination sync cannot delay first-play start (rclone/Plex “can't play”). The sync and playback queues share one rate limiter, so `throttle.requests_per_minute` remains a collective cap. Landing-page API-call counters aggregate both queues; 429s are counted once on the limiter.
+
 ## [v0.7.6-v0.8.3] - 2026-08-25
 
 ### Fixed

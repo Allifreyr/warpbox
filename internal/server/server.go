@@ -50,10 +50,14 @@ type torrentFailureTracker struct {
 
 // Server is the Warpbox WebDAV server.
 type Server struct {
-	cfg        Config
-	store      *metadata.Store
-	torBox     *torbox.Client
-	queue      *throttle.Queue
+	cfg    Config
+	store  *metadata.Store
+	torBox *torbox.Client
+	queue  *throttle.Queue
+	// syncQueue is the metadata sync worker's throttle queue. It shares a
+	// limiter with s.queue. Stats are aggregated across both for the landing
+	// page and stats recorder.
+	syncQueue  *throttle.Queue
 	root       string
 	mux        *chi.Mux
 	httpServer *http.Server
@@ -394,7 +398,7 @@ func (s *Server) startCleanupLoop() {
 // Gauge metrics (sys_mb, alloc_mb, heap_objects, cache sizes) show
 // point-in-time snapshots.
 func (s *Server) recordStats() {
-	throttleStats := s.queue.Stats()
+	throttleStats := s.throttleStats()
 
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
@@ -841,6 +845,33 @@ func (s *Server) registerRoutes() {
 // SetSyncStatus configures the callback for reading sync worker status.
 func (s *Server) SetSyncStatus(fn SyncStatusFunc) {
 	s.syncStatus = fn
+}
+
+// SetSyncQueue wires the metadata sync worker's throttle queue so the landing
+// page and stats recorder aggregate API-call counters across playback
+// (requestdl) and sync. Both queues share one limiter in production.
+func (s *Server) SetSyncQueue(q *throttle.Queue) {
+	s.syncQueue = q
+}
+
+// throttleStats aggregates API-call counters across the playback queue and
+// (if wired) the metadata sync queue.
+//
+// HTTP429Calls is not summed: 429s are counted on the shared limiter, so
+// both queues report the same value. Summing would double-count.
+func (s *Server) throttleStats() throttle.Stats {
+	total := s.queue.Stats()
+	if s.syncQueue != nil {
+		sync := s.syncQueue.Stats()
+		total.TotalCalls += sync.TotalCalls
+		total.SuccessfulCalls += sync.SuccessfulCalls
+		total.FailedCalls += sync.FailedCalls
+		total.CallsLastMinute += sync.CallsLastMinute
+		if sync.HTTP429Calls > total.HTTP429Calls {
+			total.HTTP429Calls = sync.HTTP429Calls
+		}
+	}
+	return total
 }
 
 // handleOptions responds with WebDAV capabilities.

@@ -2,6 +2,8 @@ package throttle
 
 import (
 	"context"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -187,6 +189,116 @@ type mockError struct{ msg string }
 
 func (e *mockError) Error() string { return e.msg }
 
+func TestSharedLimiterCollectiveCap(t *testing.T) {
+	limiter := NewLimiter(120) // 120 RPM = 500ms spacing
+	q1 := NewQueueWithLimiter(120, limiter)
+	q2 := NewQueueWithLimiter(120, limiter)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	q1.Start(ctx)
+	q2.Start(ctx)
+
+	var mu sync.Mutex
+	var starts []time.Time
+	record := func() {
+		mu.Lock()
+		starts = append(starts, time.Now())
+		mu.Unlock()
+	}
+
+	for i := 0; i < 3; i++ {
+		q1.Enqueue(Request{Label: "q1", Execute: func(context.Context) error { record(); return nil }})
+		q2.Enqueue(Request{Label: "q2", Execute: func(context.Context) error { record(); return nil }})
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(starts)
+		mu.Unlock()
+		if n >= 6 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(starts) != 6 {
+		t.Fatalf("expected 6 starts, got %d", len(starts))
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i].Before(starts[j]) })
+
+	const minGap = 400 * time.Millisecond
+	for i := 1; i < len(starts); i++ {
+		gap := starts[i].Sub(starts[i-1])
+		if gap < minGap {
+			t.Errorf("gap between global starts %d-%d = %v, want >= %v (collective cap violated)", i-1, i, gap, minGap)
+		}
+	}
+}
+
+func TestSharedLimiterNoStarvation(t *testing.T) {
+	limiter := NewLimiter(600) // 100ms spacing
+	qSlow := NewQueueWithLimiter(600, limiter)
+	qFast := NewQueueWithLimiter(600, limiter)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	qSlow.Start(ctx)
+	qFast.Start(ctx)
+
+	syncStarted := make(chan struct{})
+	release := make(chan struct{})
+	fastDone := make(chan struct{})
+
+	qSlow.Enqueue(Request{
+		Label: "slow-sync",
+		Execute: func(context.Context) error {
+			close(syncStarted)
+			<-release
+			return nil
+		},
+	})
+
+	select {
+	case <-syncStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow request never started")
+	}
+
+	qFast.Enqueue(Request{
+		Label: "fast-requestdl",
+		Execute: func(context.Context) error {
+			close(fastDone)
+			return nil
+		},
+	})
+
+	select {
+	case <-fastDone:
+	case <-time.After(1 * time.Second):
+		t.Fatal("fast request starved behind slow sync request")
+	}
+
+	close(release)
+}
+
+func TestSharedLimiterRecord429Once(t *testing.T) {
+	limiter := NewLimiter(600)
+	q1 := NewQueueWithLimiter(600, limiter)
+	q2 := NewQueueWithLimiter(600, limiter)
+
+	q1.Record429()
+	if q1.Stats().HTTP429Calls != 1 || q2.Stats().HTTP429Calls != 1 {
+		t.Fatalf("shared limiter 429 should be visible on both queues, got q1=%d q2=%d",
+			q1.Stats().HTTP429Calls, q2.Stats().HTTP429Calls)
+	}
+	limiter.Record429()
+	if n := q1.Stats().HTTP429Calls; n != 2 {
+		t.Fatalf("second Record429 on limiter: got %d, want 2", n)
+	}
+}
+
 func TestRateLimiting(t *testing.T) {
 	// 1200 req/min should process quickly (50ms spacing).
 	q := NewQueue(1200)
@@ -229,7 +341,7 @@ func TestProcessLoopExitsOnContextCancel(t *testing.T) {
 	// consumed, so the buffer should fill up.
 	for i := 0; i < queueBufferSize; i++ {
 		q.Enqueue(Request{
-			Label: "post-cancel",
+			Label:   "post-cancel",
 			Execute: func(ctx context.Context) error { return nil },
 		})
 	}
@@ -239,7 +351,7 @@ func TestProcessLoopExitsOnContextCancel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		q.Enqueue(Request{
-			Label: "should-block",
+			Label:   "should-block",
 			Execute: func(ctx context.Context) error { return nil },
 		})
 		close(done)

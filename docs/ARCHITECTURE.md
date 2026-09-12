@@ -31,7 +31,7 @@ Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
 
 ## Network & Rate Limiting
 
-- Blocking queues and internal throttling manage massive concurrent read requests. The proxy absorbs burst traffic from Plex and drip-feeds it to the TorBox API strictly below the 300 requests/minute limit.
+- Two blocking queues (metadata sync and playback `requestdl`) share a single rate limiter. The proxy absorbs burst traffic from Plex and drip-feeds TorBox collectively below the 300 requests/minute limit, without letting a slow sync hold up playback.
 
 ## Documentation Structure
 
