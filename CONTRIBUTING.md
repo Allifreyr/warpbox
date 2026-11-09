@@ -25,7 +25,7 @@ Use the bug report template when filing an issue. Include:
 
 2. **Clone and build:**
     ```bash
-    git clone https://github.com/mainlink0435/warpbox.git
+    git clone https://github.com/Allifreyr/warpbox.git
     cd warpbox
     CGO_ENABLED=1 go build -o warpbox ./cmd/warpbox/
     ```

@@ -15,7 +15,7 @@ So I built this. I've been using it for weeks and it works well enough that I wa
 ```yaml
 services:
   warpbox:
-    image: ghcr.io/mainlink0435/warpbox:latest
+    image: ghcr.io/allifreyr/warpbox:latest
     container_name: warpbox
     ports:
       - "1412:1412"
@@ -154,7 +154,7 @@ Requires Go 1.26.2+:
 
 ```bash
 # Clone the repository
-git clone https://github.com/mainlink0435/warpbox.git
+git clone https://github.com/Allifreyr/warpbox.git
 cd warpbox
 
 # Build the binary

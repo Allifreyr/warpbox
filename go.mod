@@ -1,4 +1,4 @@
-module github.com/mainlink0435/warpbox
+module github.com/Allifreyr/warpbox
 
 go 1.26.2
 

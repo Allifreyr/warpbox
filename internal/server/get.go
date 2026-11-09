@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mainlink0435/warpbox/internal/library"
-	"github.com/mainlink0435/warpbox/internal/metadata"
+	"github.com/Allifreyr/warpbox/internal/library"
+	"github.com/Allifreyr/warpbox/internal/metadata"
 )
 
 // ---------------------------------------------------------------------------

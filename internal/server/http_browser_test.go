@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mainlink0435/warpbox/internal/config"
-	"github.com/mainlink0435/warpbox/internal/metadata"
-	"github.com/mainlink0435/warpbox/internal/throttle"
+	"github.com/Allifreyr/warpbox/internal/config"
+	"github.com/Allifreyr/warpbox/internal/metadata"
+	"github.com/Allifreyr/warpbox/internal/throttle"
 )
 
 func TestHTTPBrowser_RootSyntheticDirsWithSizes(t *testing.T) {

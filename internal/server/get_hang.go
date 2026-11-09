@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mainlink0435/warpbox/internal/metadata"
+	"github.com/Allifreyr/warpbox/internal/metadata"
 )
 
 // enterCDNHang marks per-item data cooldown, invalidates the CDN URL cache,

@@ -1,6 +1,6 @@
 services:
   warpbox:
-    image: ghcr.io/mainlink0435/warpbox:latest
+    image: ghcr.io/allifreyr/warpbox:latest
     container_name: warpbox
     ports:
       - "1412:1412"

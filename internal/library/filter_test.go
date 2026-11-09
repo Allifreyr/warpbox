@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mainlink0435/warpbox/internal/metadata"
+	"github.com/Allifreyr/warpbox/internal/metadata"
 )
 
 func TestNewFilter(t *testing.T) {

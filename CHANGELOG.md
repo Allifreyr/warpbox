@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.6-v0.8.5] - 2026-11-09
+
+### Added
+- Optional `anime-plex` view groups supported anime releases into Plex-compatible show folders with TMDB IDs, season directories, and `SxxEyy` filenames. Uses cached TMDB metadata and Anime-Lists aliases and episode mappings. Disabled by default; requires `library.anime` configuration and a TMDB API Read Access Token. Existing Anime, Movie, TV, and watchlist paths remain unchanged.
+- Background matching at startup, after metadata sync, and at the configured refresh interval. Published paths persist across restarts and metadata refreshes. Distinct encodes and revisions keep stable release identifiers; identical copies from overlapping batches can provide alternate playback sources. Companion subtitles follow their mapped videos.
+- Offline, read-only `warpbox anime inspect` reports mapped and unresolved files. YAML overrides and `warpbox anime rebuild` support show IDs, seasons, absolute numbering, episode ranges, specials, and individual files. Ambiguous or unsupported releases remain accessible through the original Anime view. See [Anime setup and overrides](docs/anime.md).
+
+### Changed
+- Go module and internal imports now use `github.com/Allifreyr/warpbox`. Clone instructions, Docker image examples, source links, and security-report links point to this fork.
+
+### Fixed
+- Derived playback fallback stays within the requested release alias, preventing another variant with different size/range metadata from being selected through its raw path.
+- Derived file lookups filter only candidate items and their siblings using indexed queries, avoiding a whole-library scan for every Plex HEAD, GET, or directory request. Largest-file selection, subtitles, and force-tag eligibility remain enforced.
+- Anime inspection reports the current source path after a rename while preserving the published Plex alias, so override release keys follow the current directory.
+- Opening the `anime-plex` root always lists show folders. Unresolved mappings with empty output paths cannot resolve as playable root files.
+
 ## [v0.7.6-v0.8.4] - 2026-09-12
 - Metadata sync no longer blocks playback: CDN download-link (`requestdl`) calls run on their own throttle queue, so a slow usenet-pagination sync cannot delay first-play start (rclone/Plex “can't play”). The sync and playback queues share one rate limiter, so `throttle.requests_per_minute` remains a collective cap. Landing-page API-call counters aggregate both queues; 429s are counted once on the limiter.
 
@@ -237,30 +253,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: /compare/v0.7.6-v0.8.3...HEAD
-[v0.7.6-v0.8.4]: /compare/v0.7.5-v0.8.3...v0.7.6-v0.8.4
-[v0.7.6-v0.8.3]: /compare/v0.7.5-v0.8.2...v0.7.6-v0.8.3
-[v0.7.5-v0.8.2]: /compare/v0.7.4-v0.8.1...v0.7.5-v0.8.2
-[v0.7.4-v0.8.1]: /compare/v0.7.4-v0.8.0...v0.7.4-v0.8.1
-[v0.7.4-v0.8.0]: /compare/v0.7.3-v0.7.0...v0.7.4-v0.8.0
-[v0.7.4-v0.7.0]: /compare/v0.7.3-v0.6.0...v0.7.4-v0.7.0
-[v0.7.3-v0.6.0]: /compare/v0.7.2-v0.5.1...v0.7.3-v0.6.0
-[v0.7.2-v0.5.1]: /compare/v0.7.1-v0.5.0...v0.7.2-v0.5.1
-[v0.7.1-v0.5.0]: /compare/v0.7.1-v0.4.0...v0.7.1-v0.5.0
-[v0.7.1-v0.4.0]: /compare/v0.7.1-v0.3.2...v0.7.1-v0.4.0
-[v0.7.1-v0.3.2]: /compare/v0.7.1-v0.3.1...v0.7.1-v0.3.2
-[v0.7.1-v0.3.1]: /compare/v0.7.1-v0.3.0...v0.7.1-v0.3.1
-[v0.7.1-v0.3.0]: /compare/v0.7.1-v0.2.0...v0.7.1-v0.3.0
-[v0.7.1-v0.2.0]: /compare/v0.7.1-v0.1.0...v0.7.1-v0.2.0
-[v0.7.1-v0.1.0]: /compare/v0.7.1...v0.7.1-v0.1.0
-[v0.7.0]: /compare/v0.6.0...v0.7.0
-[v0.6.0]: /compare/v0.5.4...v0.6.0
+[Unreleased]: https://github.com/Allifreyr/warpbox/compare/v0.7.6-v0.8.5...HEAD
+[v0.7.6-v0.8.5]: https://github.com/Allifreyr/warpbox/compare/v0.7.6-v0.8.4...v0.7.6-v0.8.5
+[v0.7.6-v0.8.4]: https://github.com/Allifreyr/warpbox/compare/v0.7.6-v0.8.3...v0.7.6-v0.8.4
+[v0.7.6-v0.8.3]: https://github.com/Allifreyr/warpbox/compare/v0.7.5-v0.8.2...v0.7.6-v0.8.3
+[v0.7.5-v0.8.2]: https://github.com/Allifreyr/warpbox/compare/v0.7.4-v0.8.1...v0.7.5-v0.8.2
+[v0.7.4-v0.8.1]: https://github.com/Allifreyr/warpbox/compare/v0.7.4-v0.8.0...v0.7.4-v0.8.1
+[v0.7.4-v0.8.0]: https://github.com/Allifreyr/warpbox/compare/v0.7.3-v0.7.0...v0.7.4-v0.8.0
+[v0.7.4-v0.7.0]: https://github.com/Allifreyr/warpbox/compare/v0.7.3-v0.6.0...v0.7.4-v0.7.0
+[v0.7.3-v0.6.0]: https://github.com/Allifreyr/warpbox/compare/v0.7.2-v0.5.1...v0.7.3-v0.6.0
+[v0.7.2-v0.5.1]: https://github.com/Allifreyr/warpbox/compare/v0.7.1-v0.5.0...v0.7.2-v0.5.1
+[v0.7.1-v0.5.0]: https://github.com/Allifreyr/warpbox/compare/v0.7.1-v0.4.0...v0.7.1-v0.5.0
+[v0.7.1-v0.4.0]: https://github.com/Allifreyr/warpbox/compare/v0.7.1-v0.3.2...v0.7.1-v0.4.0
+[v0.7.1-v0.3.2]: https://github.com/Allifreyr/warpbox/compare/v0.7.1-v0.3.1...v0.7.1-v0.3.2
+[v0.7.1-v0.3.1]: https://github.com/Allifreyr/warpbox/compare/v0.7.1-v0.3.0...v0.7.1-v0.3.1
+[v0.7.1-v0.3.0]: https://github.com/Allifreyr/warpbox/compare/v0.7.1-v0.2.0...v0.7.1-v0.3.0
+[v0.7.1-v0.2.0]: https://github.com/Allifreyr/warpbox/compare/v0.7.1-v0.1.0...v0.7.1-v0.2.0
+[v0.7.1-v0.1.0]: https://github.com/Allifreyr/warpbox/compare/v0.7.1...v0.7.1-v0.1.0
+[v0.7.0]: https://github.com/Allifreyr/warpbox/compare/v0.6.0...v0.7.0
+[v0.6.0]: https://github.com/Allifreyr/warpbox/compare/v0.5.4...v0.6.0
 
-[v0.5.4]: /compare/v0.5.3...v0.5.4
+[v0.5.4]: https://github.com/Allifreyr/warpbox/compare/v0.5.3...v0.5.4
 
-[v0.5.3]: /compare/v0.5.2...v0.5.3
+[v0.5.3]: https://github.com/Allifreyr/warpbox/compare/v0.5.2...v0.5.3
 
-[v0.5.2]: /compare/v0.5.1...v0.5.2
+[v0.5.2]: https://github.com/Allifreyr/warpbox/compare/v0.5.1...v0.5.2
 
-[v0.5.1]: /compare/v0.5.0...v0.5.1
+[v0.5.1]: https://github.com/Allifreyr/warpbox/compare/v0.5.0...v0.5.1
 

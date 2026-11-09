@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mainlink0435/warpbox/internal/config"
-	"github.com/mainlink0435/warpbox/internal/library"
-	"github.com/mainlink0435/warpbox/internal/metadata"
+	"github.com/Allifreyr/warpbox/internal/config"
+	"github.com/Allifreyr/warpbox/internal/library"
+	"github.com/Allifreyr/warpbox/internal/metadata"
 	"gopkg.in/yaml.v3"
 )
 

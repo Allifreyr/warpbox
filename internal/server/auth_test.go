@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mainlink0435/warpbox/internal/metadata"
-	"github.com/mainlink0435/warpbox/internal/throttle"
+	"github.com/Allifreyr/warpbox/internal/metadata"
+	"github.com/Allifreyr/warpbox/internal/throttle"
 )
 
 // testHandler returns a simple 200 OK handler for testing middleware.

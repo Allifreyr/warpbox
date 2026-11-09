@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mainlink0435/warpbox/internal/library"
+	"github.com/Allifreyr/warpbox/internal/library"
 )
 
 // encodeDAVHref percent-encodes each segment of an absolute path so it is a

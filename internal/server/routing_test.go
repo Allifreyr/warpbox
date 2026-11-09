@@ -5,8 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mainlink0435/warpbox/internal/metadata"
-	"github.com/mainlink0435/warpbox/internal/throttle"
+	"github.com/Allifreyr/warpbox/internal/metadata"
+	"github.com/Allifreyr/warpbox/internal/throttle"
 )
 
 func testServer(t *testing.T, overrides ...Config) *Server {

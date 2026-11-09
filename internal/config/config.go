@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mainlink0435/warpbox/internal/library"
+	"github.com/Allifreyr/warpbox/internal/library"
 	"gopkg.in/yaml.v3"
 )
 
