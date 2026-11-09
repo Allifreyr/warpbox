@@ -118,6 +118,7 @@ const webdavRoot = "/webdav"
 
 // Config holds the server-specific configuration.
 type Config struct {
+	DerivedView         DerivedView
 	ListenAddr          string
 	CDNTtlMinutes       int    // How long to cache CDN URLs (0 = disable)
 	CDNURLAutoRepair    bool   // Auto-repair stale CDN URLs
@@ -594,7 +595,9 @@ func (s *Server) handleWebDAV(w http.ResponseWriter, r *http.Request) {
 	vpName := virtualPathName(r.URL.Path)
 	var cfilter *library.Filter
 	var croot string
-	if vpName == "__all__" {
+	if s.cfg.DerivedView != nil && vpName == s.cfg.DerivedView.Name() {
+		croot = s.root + "/" + vpName
+	} else if vpName == "__all__" {
 		// Unfiltered view — strip __all__ from the path root.
 		croot = s.root + "/__all__"
 	} else if f, ok := s.virtualPathMap[vpName]; ok {

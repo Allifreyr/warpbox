@@ -110,6 +110,7 @@ type VirtualPathConfig struct {
 
 // LibraryConfig holds settings for the virtual library feature.
 type LibraryConfig struct {
+	Anime          AnimeConfig         `yaml:"anime"`
 	VirtualPaths   []VirtualPathConfig `yaml:"virtual_paths"`
 	OnItemsAdded   string              `yaml:"on_items_added"`       // Shell command for new items
 	OnItemsRemoved string              `yaml:"on_items_removed"`     // Shell command for removed items
@@ -118,6 +119,16 @@ type LibraryConfig struct {
 	// Force-into-library tags are automatic: forced{virtual_path_name} for each
 	// configured path (e.g. path "movies" → tag "forcedmovies"). Default: ["rename"].
 	OverrideTags []string `yaml:"override_tags"`
+}
+
+// AnimeConfig controls the optional, separately named Plex projection.
+type AnimeConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Source        string `yaml:"source"`
+	Name          string `yaml:"name"`
+	TMDBToken     string `yaml:"tmdb_token"`
+	RefreshHours  int    `yaml:"refresh_hours"`
+	OverridesFile string `yaml:"overrides_file"`
 }
 
 // AuthConfig holds optional HTTP Basic Authentication settings for the web UI.
@@ -242,6 +253,15 @@ func setDefaults(c *Config) {
 	}
 	if c.Library.HookTimeoutSec == 0 {
 		c.Library.HookTimeoutSec = 30
+	}
+	if c.Library.Anime.Source == "" {
+		c.Library.Anime.Source = "anime"
+	}
+	if c.Library.Anime.Name == "" {
+		c.Library.Anime.Name = "anime-plex"
+	}
+	if c.Library.Anime.RefreshHours == 0 {
+		c.Library.Anime.RefreshHours = 24
 	}
 	if len(c.Library.OverrideTags) == 0 {
 		// Force tags (forced{path}) are added automatically from virtual_paths
@@ -446,6 +466,20 @@ func validateLibrary(l *LibraryConfig) error {
 		if minSize > 0 && maxSize > 0 && minSize > maxSize {
 			return fmt.Errorf("library.virtual_paths[%d]: min_file_size (%s) must be <= max_file_size (%s)",
 				i, vp.MinFileSize, vp.MaxFileSize)
+		}
+	}
+	if a := l.Anime; a.Enabled {
+		if !seen[a.Source] {
+			return fmt.Errorf("library.anime.source must name an existing virtual path")
+		}
+		if a.Name == "" || a.Name == "__all__" || a.Name == "." || a.Name == ".." || strings.ContainsAny(a.Name, `/\:*?"<>|&`) || seen[a.Name] {
+			return fmt.Errorf("library.anime.name must be a distinct, safe path segment")
+		}
+		if strings.TrimSpace(a.TMDBToken) == "" {
+			return fmt.Errorf("library.anime.tmdb_token is required when enabled")
+		}
+		if a.RefreshHours < 1 || a.RefreshHours > 720 {
+			return fmt.Errorf("library.anime.refresh_hours must be 1–720")
 		}
 	}
 	if l.HookTimeoutSec < 1 || l.HookTimeoutSec > 3600 {

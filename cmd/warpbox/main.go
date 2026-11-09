@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mainlink0435/warpbox/internal/anime"
 	"github.com/mainlink0435/warpbox/internal/config"
 	"github.com/mainlink0435/warpbox/internal/library"
 	"github.com/mainlink0435/warpbox/internal/metadata"
@@ -34,6 +35,9 @@ var banner string
 var Version = "dev"
 
 func main() {
+	if runAnimeCLI(os.Args[1:]) {
+		return
+	}
 	configPath := flag.String("config", "config.yml", "Path to the YAML configuration file")
 	dbPath := flag.String("db", "warpbox.db", "Path to the SQLite metadata database")
 	showVersion := flag.Bool("version", false, "Print version and exit")
@@ -162,6 +166,20 @@ func main() {
 		}
 	}
 
+	var animeView *anime.View
+	if cfg.Library.Anime.Enabled {
+		animeCfg := cfg.Library
+		if animeCfg.Anime.OverridesFile != "" && !filepath.IsAbs(animeCfg.Anime.OverridesFile) {
+			animeCfg.Anime.OverridesFile = filepath.Join(hookWorkDir, animeCfg.Anime.OverridesFile)
+		}
+		animeView, err = anime.New(metadataStore, animeCfg)
+		if err != nil {
+			slog.Error("initializing anime view", "error", err)
+			os.Exit(1)
+		}
+		syncWorker.OnSynced = animeView.Notify
+		go animeView.Run(ctx)
+	}
 	go syncWorker.Start(ctx)
 
 	server.SetActions(map[string]server.ActionFunc{
@@ -205,6 +223,9 @@ func main() {
 		StatsIntervalSeconds:     cfg.Stats.IntervalSeconds,
 		StatsRetentionHours:      cfg.Stats.RetentionHours,
 		StatsChartMinutes:        cfg.Stats.ChartMinutes,
+	}
+	if animeView != nil {
+		serverCfg.DerivedView = animeView
 	}
 	serverCfg.LevelVar = levelVar
 

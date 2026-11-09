@@ -142,6 +142,16 @@ sync:
   # sync_timeout_seconds: 0
 
 library:
+  # Optional Plex-friendly projection of an EXISTING virtual path. Default off.
+  # Original libraries and source file paths are unchanged. See docs/anime.md.
+  anime:
+    enabled: false
+    source: anime              # Existing virtual_paths[].name; default anime
+    name: anime-plex           # Distinct output mount name; default anime-plex
+    tmdb_token: ""             # TMDB API Read Access Token; required when enabled
+    refresh_hours: 24          # Metadata refresh interval, 1–720; default 24
+    overrides_file: ""         # Optional YAML path relative to this config file
+
   # Virtual library paths: filtered views over the raw TorBox file tree.
   # Each virtual path has its own regex filters that determine which
   # directories (torrents) and files are visible. Multiple virtual paths

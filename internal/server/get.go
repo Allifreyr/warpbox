@@ -33,14 +33,14 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	virtualPath = strings.TrimPrefix(virtualPath, "/")
 
 	if virtualPath == "" {
-		s.serveDirListing(w, r.URL.Path, "1", libFilter, root)
+		s.serveDirListing(w, r, "1", libFilter, root)
 		return
 	}
 
 	slog.Debug("GET", "path", virtualPath, "range", r.Header.Get("Range"))
 
 	// Look up the file in the SQLite store.
-	file, err := s.store.GetFileByPath(virtualPath)
+	file, err := s.resolveView(r.Context(), root, virtualPath)
 	if err != nil {
 		slog.Error("GET: store lookup failed", "path", virtualPath, "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -48,14 +48,14 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	if file == nil {
 		// Not a file — check if it's a virtual directory with children.
-		records, listErr := s.store.ListDir(virtualPath)
+		records, listErr := s.listView(r.Context(), root, virtualPath)
 		if listErr != nil {
 			slog.Error("GET: ListDir failed", "prefix", virtualPath, "error", listErr)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
 		if len(records) > 0 {
-			s.serveDirListing(w, r.URL.Path, "1", libFilter, root)
+			s.serveDirListing(w, r, "1", libFilter, root)
 			return
 		}
 		http.Error(w, "not found", http.StatusNotFound)
@@ -109,7 +109,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		cdnURL, err = s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
 		if err != nil {
 			// Primary fetch failed — try alternatives (same path, different TorBox item).
-			cdnURL, err = s.tryCDNFallback(file.Path)
+			cdnURL, err = s.fallbackFile(file)
 			if err != nil {
 				// All alternatives also failed. Instead of returning an error (which
 				// rclone counts toward maxErrorCount=10, causing Plex to trash the file),
@@ -222,7 +222,7 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 			newURL, refreshErr := s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
 			if refreshErr != nil {
 				// Primary refresh failed — try alternatives.
-				newURL, refreshErr = s.tryCDNFallback(file.Path)
+				newURL, refreshErr = s.fallbackFile(file)
 				if refreshErr != nil {
 					slog.Error("GET: CDN URL refresh failed (primary + alternatives)",
 						"path", file.Path,
@@ -470,7 +470,7 @@ func (s *Server) handleHead(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("HEAD", "path", virtualPath)
 
 	// Look up the file to get metadata.
-	file, err := s.store.GetFileByPath(virtualPath)
+	file, err := s.resolveView(r.Context(), root, virtualPath)
 	if err != nil {
 		slog.Error("HEAD: store lookup failed", "path", virtualPath, "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -500,7 +500,8 @@ func (s *Server) handleHead(w http.ResponseWriter, r *http.Request) {
 // a WebDAV Multi-Status XML document listing the directory contents.
 // This matches the behaviour of zurg and other standards-compliant WebDAV servers
 // so that Chrome and other browsers render a browsable directory listing.
-func (s *Server) serveDirListing(w http.ResponseWriter, reqPath string, depth string, f *library.Filter, root string) {
+func (s *Server) serveDirListing(w http.ResponseWriter, r *http.Request, depth string, f *library.Filter, root string) {
+	reqPath := r.URL.Path
 	slog.Debug("directory listing", "path", reqPath, "depth", depth)
 
 	// Normalise the path.
@@ -514,7 +515,7 @@ func (s *Server) serveDirListing(w http.ResponseWriter, reqPath string, depth st
 	prefix = strings.TrimPrefix(prefix, "/")
 
 	// List files from SQLite matching this prefix.
-	records, err := s.store.ListDir(prefix)
+	records, err := s.listView(r.Context(), root, prefix)
 	if err != nil {
 		slog.Error("directory listing: ListDir failed", "prefix", prefix, "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -545,6 +546,9 @@ func (s *Server) serveDirListing(w http.ResponseWriter, reqPath string, depth st
 		if prefix == "" && root == webdavRoot {
 			baseHref := strings.TrimRight(normalised, "/") + "/"
 			responses = appendResponse(responses, baseHref+"__all__/", true, 0, "", "", "", &seen)
+			if s.cfg.DerivedView != nil {
+				responses = appendResponse(responses, baseHref+s.cfg.DerivedView.Name()+"/", true, 0, "", "", "", &seen)
+			}
 			for _, vf := range s.virtualFilters {
 				name := strings.TrimPrefix(vf.Mount, "/")
 				responses = appendResponse(responses, baseHref+name+"/", true, 0, "", "", "", &seen)

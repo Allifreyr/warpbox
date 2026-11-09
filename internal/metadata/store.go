@@ -49,6 +49,7 @@ func (s *Store) Ping(ctx context.Context) error {
 // ItemID and FileID together identify a file in the TorBox API
 // for CDN URL generation.
 type FileRecord struct {
+	ViewPath     string     `json:"-"`       // Derived view lookup only; Path remains the original playback path.
 	ID           int64      `json:"id"`      // Internal auto-increment ID
 	ItemID       int64      `json:"item_id"` // TorBox parent ID (torrent or usenet ID, for CDN URL)
 	FileID       int64      `json:"file_id"` // TorBox file ID within parent (for CDN URL)
@@ -87,6 +88,10 @@ func Open(dbPath string) (*Store, error) {
 	s := &Store{db: db, dbPath: dbPath}
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("running migrations: %w", err)
+	}
+	if err := s.initAnime(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("initializing anime view: %w", err)
 	}
 	return s, nil
 }

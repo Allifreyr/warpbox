@@ -109,7 +109,7 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 	prefix = strings.TrimPrefix(prefix, "/")
 
 	// List files from SQLite matching this prefix.
-	records, err := s.store.ListDir(prefix)
+	records, err := s.listView(r.Context(), s.rootForRequest(r), prefix)
 	if err != nil {
 		slog.Error("PROPFIND: ListDir failed", "prefix", prefix, "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -142,6 +142,9 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 			baseHref := strings.TrimRight(reqPath, "/") + "/"
 			// __all__ is always first.
 			responses = appendResponse(responses, baseHref+"__all__/", true, 0, "", "", "", &seen)
+			if s.cfg.DerivedView != nil {
+				responses = appendResponse(responses, baseHref+s.cfg.DerivedView.Name()+"/", true, 0, "", "", "", &seen)
+			}
 			for _, vf := range s.virtualFilters {
 				name := strings.TrimPrefix(vf.Mount, "/")
 				responses = appendResponse(responses, baseHref+name+"/", true, 0, "", "", "", &seen)
@@ -158,52 +161,52 @@ func (s *Server) handlePropfind(w http.ResponseWriter, r *http.Request) {
 			immediate := map[string]childInfo{}
 
 			for _, rec := range records {
-			relPath := strings.TrimPrefix(rec.Path, prefix)
-			relPath = strings.TrimPrefix(relPath, "/")
+				relPath := strings.TrimPrefix(rec.Path, prefix)
+				relPath = strings.TrimPrefix(relPath, "/")
 
-			parts := strings.SplitN(relPath, "/", 2)
-			immediateName := parts[0]
+				parts := strings.SplitN(relPath, "/", 2)
+				immediateName := parts[0]
 
-			if _, exists := immediate[immediateName]; exists {
-				continue
-			}
+				if _, exists := immediate[immediateName]; exists {
+					continue
+				}
 
-			if len(parts) > 1 {
-				// The file is nested deeper — the immediate child is a directory.
-				// Use the first file's created_at as the directory timestamp.
-				if existing, ok := immediate[immediateName]; !ok || existing.createdAt == "" {
+				if len(parts) > 1 {
+					// The file is nested deeper — the immediate child is a directory.
+					// Use the first file's created_at as the directory timestamp.
+					if existing, ok := immediate[immediateName]; !ok || existing.createdAt == "" {
+						immediate[immediateName] = childInfo{
+							isDir:     true,
+							createdAt: rec.CreatedAt,
+						}
+					}
+				} else {
+					// Direct file in the requested directory.
+					mime := rec.MimeType
+					if mime == "" {
+						mime = "application/octet-stream"
+					}
 					immediate[immediateName] = childInfo{
-						isDir:     true,
+						isDir:     false,
+						size:      rec.Size,
+						name:      rec.Name,
+						mime:      mime,
 						createdAt: rec.CreatedAt,
 					}
 				}
-			} else {
-				// Direct file in the requested directory.
-				mime := rec.MimeType
-				if mime == "" {
-					mime = "application/octet-stream"
-				}
-				immediate[immediateName] = childInfo{
-					isDir:     false,
-					size:      rec.Size,
-					name:      rec.Name,
-					mime:      mime,
-					createdAt: rec.CreatedAt,
-				}
 			}
-		}
 
-		// Build response entries from the immediate children map.
-		baseHref := strings.TrimRight(reqPath, "/") + "/"
-		for name, info := range immediate {
-			childHref := baseHref + name
-			if info.isDir {
-				childHref += "/"
-				responses = appendResponse(responses, childHref, true, 0, "", "", info.createdAt, &seen)
-			} else {
-				responses = appendResponse(responses, childHref, false, info.size, info.name, info.mime, info.createdAt, &seen)
+			// Build response entries from the immediate children map.
+			baseHref := strings.TrimRight(reqPath, "/") + "/"
+			for name, info := range immediate {
+				childHref := baseHref + name
+				if info.isDir {
+					childHref += "/"
+					responses = appendResponse(responses, childHref, true, 0, "", "", info.createdAt, &seen)
+				} else {
+					responses = appendResponse(responses, childHref, false, info.size, info.name, info.mime, info.createdAt, &seen)
+				}
 			}
-		}
 		} // close else block
 	} // close depth block
 

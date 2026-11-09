@@ -126,7 +126,7 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 
 		cdnURL, fetchErr := s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
 		if fetchErr != nil {
-			cdnURL, fetchErr = s.tryCDNFallback(file.Path)
+			cdnURL, fetchErr = s.fallbackFile(file)
 		}
 		if fetchErr != nil {
 			// Exponential backoff when rate-limited by TorBox's per-item

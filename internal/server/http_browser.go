@@ -37,7 +37,10 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	var hFilter *library.Filter
 	var virtualPath = rawVirtualPath
 
-	if firstSeg == "__all__" {
+	derived := s.cfg.DerivedView != nil && firstSeg == s.cfg.DerivedView.Name()
+	if derived {
+		virtualPath = strings.TrimPrefix(strings.TrimPrefix(rawVirtualPath, firstSeg), "/")
+	} else if firstSeg == "__all__" {
 		virtualPath = strings.TrimPrefix(rawVirtualPath, "__all__")
 		virtualPath = strings.TrimPrefix(virtualPath, "/")
 	} else if f, ok := s.virtualPathMap[firstSeg]; ok {
@@ -47,7 +50,11 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if this path resolves to a file first.
-	file, err := s.store.GetFileByPath(virtualPath)
+	lookupRoot := s.root
+	if derived {
+		lookupRoot += "/" + firstSeg
+	}
+	file, err := s.resolveView(r.Context(), lookupRoot, virtualPath)
 	if err != nil {
 		slog.Error("HTTP: store lookup failed", "path", virtualPath, "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -61,7 +68,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Not a file — serve HTML directory listing.
-	records, err := s.store.ListDir(virtualPath)
+	records, err := s.listView(r.Context(), lookupRoot, virtualPath)
 	if err != nil {
 		slog.Error("HTTP browser: ListDir failed", "prefix", virtualPath, "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -88,7 +95,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Determine href prefix for virtual mounts.
 	mountPrefix := ""
-	if hFilter != nil {
+	if hFilter != nil || derived {
 		mountPrefix = "/" + firstSeg
 	} else if firstSeg == "__all__" {
 		mountPrefix = "/__all__"
@@ -130,6 +137,19 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		dirs = append(dirs, entry{Name: "__all__/", Href: "/http/__all__/", Size: allTotal, IsDir: true})
+		if s.cfg.DerivedView != nil {
+			mapped, err := s.cfg.DerivedView.List(r.Context(), "")
+			if err != nil {
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			var total int64
+			for _, f := range mapped {
+				total += f.Size
+			}
+			name := s.cfg.DerivedView.Name()
+			dirs = append(dirs, entry{Name: name + "/", Href: encodeDAVHref("/http/" + name + "/"), Size: total, IsDir: true})
+		}
 		for i, vf := range s.virtualFilters {
 			name := strings.TrimPrefix(vf.Mount, "/")
 			dirs = append(dirs, entry{Name: name + "/", Href: "/http/" + name + "/", Size: filterTotals[i], IsDir: true})

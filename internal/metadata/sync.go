@@ -31,8 +31,8 @@ type SyncWorker struct {
 	bypassCache   bool
 	retryAttempts int
 	retryBackoff  time.Duration
-	syncTimeout   time.Duration // overall cap for a manual resync; 0 = no cap
-	syncing       atomic.Bool   // in-flight guard for full syncOnce
+	syncTimeout   time.Duration   // overall cap for a manual resync; 0 = no cap
+	syncing       atomic.Bool     // in-flight guard for full syncOnce
 	overrideTags  map[string]bool // Tags that participate in filter matching
 	lastError     error
 	lastSuccess   time.Time
@@ -40,6 +40,8 @@ type SyncWorker struct {
 	// Hooks for library change detection.
 	OnItemsAdded   func(itemNames []string)
 	OnItemsRemoved func(itemNames []string)
+	// OnSynced must be nonblocking; derived views enqueue local reconciliation.
+	OnSynced func()
 
 	mu sync.Mutex
 	// syncMu serializes full sync and single-item sync so prune cannot race
@@ -287,6 +289,9 @@ func (w *SyncWorker) SyncItem(ctx context.Context, source FileSource, itemID int
 
 	slog.Info("sync item complete",
 		"source", source, "id", itemID, "name", item.Name, "files", count, "sync_tag", syncTag)
+	if w.OnSynced != nil {
+		w.OnSynced()
+	}
 
 	// Fire OnItemsAdded only when this is a newly seen item.
 	if !existed && w.OnItemsAdded != nil && count > 0 {
@@ -562,6 +567,9 @@ func (w *SyncWorker) syncOnceLocked(ctx context.Context) {
 	}
 
 	// Detect added/removed items and fire hooks.
+	if w.OnSynced != nil && (torRes.err == nil || usenetRes.err == nil) {
+		w.OnSynced()
+	}
 	if len(oldItems) > 0 && (w.OnItemsAdded != nil || w.OnItemsRemoved != nil) {
 		newItems, err := w.store.ListItemDirs()
 		if err != nil {
