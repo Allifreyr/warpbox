@@ -4,9 +4,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -82,6 +84,22 @@ func (s *Server) handleRestartSync(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Sync worker restart triggered\n"))
 }
 
+// handleCSRF is a lightweight bootstrap for integrations. Same authentication
+// as the landing page; never queries the metadata database or statistics.
+func (s *Server) handleCSRF(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(map[string]any{"csrf_token": s.csrfToken, "delivery_api": 1})
+}
+
+func primaryMedia(p string) bool {
+	switch strings.ToLower(path.Ext(p)) {
+	case ".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts", ".m2ts", ".webm", ".mpg", ".mpeg", ".wmv":
+		return true
+	}
+	return false
+}
+
 // handleSyncItem fetches one TorBox torrent or usenet item by id into SQLite.
 // Form fields: source=torrent|usenet, id=<positive int>.
 // Never runs a full prune — safe for on-demand use.
@@ -120,6 +138,12 @@ func (s *Server) handleSyncItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mount := strings.TrimSpace(r.FormValue("mount"))
+	if mount != "" && s.virtualPathMap[mount] == nil {
+		http.Error(w, "Unknown mount", http.StatusBadRequest)
+		return
+	}
+
 	slog.Info("action: sync-item triggered", "source", sourceStr, "id", itemID)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
@@ -133,6 +157,36 @@ func (s *Server) handleSyncItem(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Error("action: sync-item failed", "source", sourceStr, "id", itemID, "error", err)
 		http.Error(w, "Sync item failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		visible := []map[string]any{}
+		excluded := []map[string]any{}
+		if mount != "" && result.Ready {
+			records, err := s.listView(r.Context(), s.root+"/"+mount, "")
+			if err != nil {
+				http.Error(w, "Could not query shelf visibility", http.StatusInternalServerError)
+				return
+			}
+			kept := s.virtualPathMap[mount].Apply(records)
+			keys := map[int64]bool{}
+			for _, f := range kept {
+				if f.ItemID == itemID && f.Source == source && primaryMedia(f.Path) {
+					keys[f.FileID] = true
+					visible = append(visible, map[string]any{"file_id": f.FileID, "path": f.Path, "size": f.Size})
+				}
+			}
+			for _, f := range records {
+				if f.ItemID == itemID && f.Source == source && primaryMedia(f.Path) && !keys[f.FileID] {
+					excluded = append(excluded, map[string]any{"file_id": f.FileID, "path": f.Path, "reason": "excluded by configured mount filters"})
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"item_id": itemID, "source": strings.TrimSuffix(sourceStr, "s"), "mount": mount,
+			"ready": result.Ready, "message": result.Message, "files_upserted": result.FilesUpserted,
+			"files_failed": result.FilesFailed, "visible_files": visible, "excluded_files": excluded})
 		return
 	}
 

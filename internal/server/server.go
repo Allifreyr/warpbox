@@ -825,6 +825,7 @@ func (s *Server) registerRoutes() {
 	}
 
 	// Landing page (exact match only).
+	s.mux.With(requireAuth).Get("/api/csrf", s.handleCSRF)
 	s.mux.With(requireAuth).Get("/", s.handleLanding)
 
 	// Static assets.

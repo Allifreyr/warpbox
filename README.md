@@ -100,6 +100,17 @@ docker compose restart warpbox
 
 Warpbox can run shell commands when new or removed items are detected during a sync. Configure `library.on_items_added` and `library.on_items_removed` in your `config.yml`. Hook commands run from the config file's directory (`/data/` in Docker), so a script placed alongside `config.yml` can be referenced with a relative path like `sh myscript.sh`.
 
+### On-demand sync and optional integrations
+
+Use **Actions > Fetch item** on the landing page to fetch one TorBox torrent or
+usenet item without waiting for the next full sync. Scripts can use the same
+`POST /actions/sync-item` endpoint; integrations can request JSON readiness and
+target-mount visibility using the lightweight `GET /api/csrf` bootstrap.
+
+Warpbox works independently of Plex and plex_debrid. Existing standalone setups
+need no additional settings. The optional [watchlist bridge guide](docs/watchlist-bridge.md)
+explains the API, soft-tag shelves, and the separate plex_debrid delivery workflow.
+
 ### Bare mount (without Docker)
 
 ```bash

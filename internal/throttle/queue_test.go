@@ -53,10 +53,13 @@ func TestEnqueueOrder(t *testing.T) {
 		})
 	}
 
-	time.Sleep(500 * time.Millisecond)
-	close(order)
-	for v := range order {
-		results = append(results, v)
+	for len(results) < 3 {
+		select {
+		case v := <-order:
+			results = append(results, v)
+		case <-time.After(2 * time.Second):
+			t.Fatal("queue did not deliver all results")
+		}
 	}
 
 	if len(results) != 3 {
@@ -74,11 +77,11 @@ func TestContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	q.Start(ctx)
 
-	var executed bool
+	var executed atomic.Bool
 	q.Enqueue(Request{
 		Label: "cancel-test",
 		Execute: func(ctx context.Context) error {
-			executed = true
+			executed.Store(true)
 			return nil
 		},
 	})
@@ -89,7 +92,7 @@ func TestContextCancellation(t *testing.T) {
 
 	// Give it a moment.
 	time.Sleep(500 * time.Millisecond)
-	if executed {
+	if executed.Load() {
 		t.Log("request may have executed before cancellation (race allowed)")
 	}
 }

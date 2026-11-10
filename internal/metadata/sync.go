@@ -58,6 +58,7 @@ type SyncItemResult struct {
 	ItemName      string
 	Source        FileSource
 	FilesUpserted int
+	FilesFailed   int
 	Ready         bool   // false if download not present / not cached yet
 	Message       string // human-readable status for UI/integrations
 }
@@ -214,7 +215,21 @@ func (w *SyncWorker) SyncItem(ctx context.Context, source FileSource, itemID int
 		return SyncItemResult{}, fmt.Errorf("unsupported source %d (use torrent or usenet)", source)
 	}
 
-	w.syncMu.Lock()
+	// sync.Mutex is also used by full sync. TryLock lets callers cancel
+	// without leaving a goroutine waiting to acquire it after the request ends.
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !w.syncMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return SyncItemResult{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		w.syncMu.Unlock()
+		return SyncItemResult{}, err
+	}
 	defer w.syncMu.Unlock()
 
 	result := SyncItemResult{ItemID: itemID, Source: source}
@@ -246,22 +261,33 @@ func (w *SyncWorker) SyncItem(ctx context.Context, source FileSource, itemID int
 		label = "sync item: GetUsenet"
 	}
 
-	w.queue.Enqueue(throttle.Request{
+	err := w.queue.EnqueueContext(ctx, throttle.Request{
 		Label: label,
-		Execute: func(ctx context.Context) error {
+		Execute: func(callCtx context.Context) error {
 			var item *torbox.Torrent
 			var err error
 			if source == SourceTorrent {
-				item, err = w.client.GetTorrent(ctx, itemID)
+				item, err = w.client.GetTorrent(callCtx, itemID)
 			} else {
-				item, err = w.client.GetUsenet(ctx, itemID)
+				item, err = w.client.GetUsenet(callCtx, itemID)
 			}
 			ch <- fetchResult{item, err}
 			return err
 		},
 	})
 
-	fr := <-ch
+	if err != nil {
+		return result, err
+	}
+	var fr fetchResult
+	select {
+	case <-ctx.Done():
+		return result, ctx.Err()
+	case fr = <-ch:
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if fr.err != nil {
 		return result, fr.err
 	}
@@ -282,6 +308,15 @@ func (w *SyncWorker) SyncItem(ctx context.Context, source FileSource, itemID int
 	result.FilesUpserted = count
 	result.Ready = ready
 	result.Message = msg
+	if strings.HasPrefix(msg, "metadata write failed") {
+		for _, f := range item.Files {
+			if usableTorBoxFile(f) {
+				result.FilesFailed++
+			}
+		}
+		result.FilesFailed -= count
+		return result, fmt.Errorf("%s", msg)
+	}
 	if !ready {
 		slog.Info("sync item: not ready", "source", source, "id", itemID, "state", item.DownloadState, "msg", msg)
 		return result, nil
@@ -613,6 +648,7 @@ func (w *SyncWorker) upsertItemFiles(item torbox.Torrent, source FileSource, syn
 		return 0, false, fmt.Sprintf("item %d (%q) has no files yet", item.ID, item.Name)
 	}
 
+	failed := 0
 	for _, f := range item.Files {
 		if !usableTorBoxFile(f) {
 			slog.Debug("metadata sync: skipping unusable file",
@@ -621,11 +657,18 @@ func (w *SyncWorker) upsertItemFiles(item torbox.Torrent, source FileSource, syn
 		}
 		rec := buildFileRecord(item.ID, f, syncTag, source, item.CreatedAt, item.Tags, w.overrideTags, item.Name)
 		if err := w.store.UpsertFile(rec); err != nil {
+			failed++
 			slog.Error("metadata sync: upsert failed",
 				"file_id", f.ID, "path", rec.Path, "error", err)
 			continue
 		}
 		count++
+	}
+	if failed > 0 {
+		return count, false, fmt.Sprintf("metadata write failed: %d file(s), %d stored", failed, count)
+	}
+	if count == 0 {
+		return 0, false, "item has no usable files"
 	}
 	return count, true, fmt.Sprintf("synced item %d (%q): %d file(s)", item.ID, item.Name, count)
 }

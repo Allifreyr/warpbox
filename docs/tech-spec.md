@@ -189,14 +189,39 @@ An OpenAPI 3.0 specification is auto-generated from the route tree using `openap
 
 Calls `s.store.Ping(ctx)` with a 3-second context timeout. Returns `{"status": "ok"}` (200) on success or `{"status": "error", "detail": "database unreachable"}` (503) on failure. No auth — designed for Docker healthchecks and load balancer probes.
 
+### Integration CSRF bootstrap (`GET /api/csrf`)
+
+Returns `csrf_token` and `delivery_api: 1` as JSON with `Cache-Control: no-store`.
+Uses the same optional Basic authentication as the landing page. It reads the
+in-memory token without running landing-page statistics or metadata-count queries.
+
 ### Actions (`/actions/*`)
 
-Post-only endpoints wired from `main.go` via `server.SetActions()`:
-- **resync** → calls `syncWorker.SyncNow()` (out-of-cycle sync in a 60s background context)
-- **restart-sync** → calls `syncWorker.Restart()` (cancels current loop, starts fresh)
-- **loglevel** → reads `level` form value, validates via `config.ParseLevel()`, atomically sets `slog.LevelVar`, and persists to config file via `config.UpdateLogLevel()` (temp file + rename for atomicity)
+POST endpoints require the configured Basic authentication and a valid
+`X-CSRF-Token` header:
 
-All actions execute asynchronously in a goroutine and return `200 OK` immediately.
+- **resync** calls `syncWorker.SyncNow()` in a background goroutine and immediately
+  acknowledges the request. The configured manual-sync timeout applies.
+- **restart-sync** asynchronously restarts the worker loop.
+- **loglevel** validates and applies the form `level` synchronously, persisting it
+  through `config.UpdateLogLevel()`.
+- **sync-item** waits for the registered `SyncItem` callback. Required form fields
+  are `source=torrent|usenet` and a positive `id`; optional `mount` selects an
+  existing configured virtual path. A 60-second context bounds synchronization
+  and queued TorBox work. It never performs a full prune.
+
+Sync-item preserves its default text result. `Accept: application/json` requests
+`item_id`, `source`, `mount`, `ready`, `message`, `files_upserted`, `files_failed`,
+`visible_files` and `excluded_files`. Visibility arrays contain the requested
+item's primary videos after the same WebDAV view/filter logic; without `mount`,
+they are empty. No playback URLs are fetched. Zero usable files are not ready;
+metadata-write failures return HTTP 502 instead of reporting success.
+
+Not-ready results remain HTTP 200. Invalid input/mount returns 400, invalid
+authentication 401, invalid CSRF 403, and missing TorBox items 404. Fetch/write
+failures and deadline expiry return 502. Errors remain plain text. Metadata
+readiness is independent of mount-filter eligibility, rclone caches and Plex
+indexing. See [the integration guide](watchlist-bridge.md) for request examples.
 
 ### Landing Page (`/`)
 
@@ -447,7 +472,7 @@ The core request executor:
 - **`Start(ctx)`** — stores `ctx` as `parentCtx`, creates a derived `cancelCtx`, calls `runLoop(ctx)`, closes `loopDone` channel on exit.
 - **`Stop()`** — calls the cancel function on the current loop, waits up to 90 seconds for `loopDone` to close. Safe to call multiple times or before `Start`.
 - **`Restart()`** — calls `Stop()`, creates a new derived context from `parentCtx`, launches `runLoop` in a new goroutine.
-- **`SyncNow()`** — uses `parentCtx` when set (so shutdown cancels an in-flight resync). Bounded by `sync.sync_timeout_seconds` when >0; otherwise there is no overall deadline (each HTTP request is still bounded by `torbox.request_timeout_seconds`). Calls `syncOnce(ctx)` synchronously. A second full sync that arrives while one is running is skipped; `SyncItem` still waits on `syncMu`.
+- **`SyncNow()`** — uses `parentCtx` when set (so shutdown cancels an in-flight resync). Bounded by `sync.sync_timeout_seconds` when >0; otherwise there is no overall deadline (each HTTP request is still bounded by `torbox.request_timeout_seconds`). Calls `syncOnce(ctx)` synchronously. A second full sync that arrives while one is running is skipped; `SyncItem` waits on `syncMu` with request cancellation rather than waiting indefinitely.
 - **`Status()`** — returns `SyncStatus{LastSuccess time.Time, LastError string}`.
 
 ### Sync Loop (`runLoop`)
@@ -946,7 +971,8 @@ This adapter is applied to protected routes via `s.mux.With(requireAuth).Get(...
 |-------|---------|
 | `/` | Landing page with runtime stats and management buttons |
 | `/logs/` | Log viewer |
-| `/actions/*` | Management API (resync, restart-sync, loglevel) |
+| `/actions/*` | Management API (resync, restart-sync, loglevel, sync-item) |
+| `/api/csrf` | Lightweight integration token and capability bootstrap |
 | `/stats.json` | Time-series metrics endpoint |
 | `/http/*` | HTML file browser + CDN streaming |
 | `/debug/pprof/*` | pprof profiling (only when enabled) |
@@ -1016,6 +1042,13 @@ func (q *Queue) Enqueue(r Request) {
 `Enqueue` sends to the channel. It blocks when the buffer is full. The `Request` carries:
 - `Label` (string) — descriptive name for log messages
 - `Execute` (`func(ctx context.Context) error`) — the actual API call
+
+`EnqueueContext(ctx, request)` is the cancellable admission path used by
+single-item sync. It returns when `ctx` ends even if the buffer is full. The
+optional `Request.Context` carries that request's deadline; execution combines
+request cancellation with worker shutdown. Canceled queued work is skipped,
+including while waiting for a limiter slot. Ordinary `Enqueue` callers keep the
+original worker context and behavior.
 
 ### Process Loop (`processLoop`)
 

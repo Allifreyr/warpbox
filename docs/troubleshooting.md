@@ -39,6 +39,21 @@ This page covers common problems, what they mean, and how to fix them.
 | Item still downloading | Fetch item returns “not ready” until TorBox has `download_present` / cached state. Retry when the dashboard shows ready. |
 | rclone dir cache | After Warpbox has the files, wait for rclone `--poll-interval` / `--dir-cache-time`, or refresh the mount. Confirm with the HTTP browser (`http://localhost:1412/http/tv/`) — that path bypasses rclone’s dir cache. |
 
+## Single-item integration reports an error or no visible files
+
+| Result | What to check |
+|---|---|
+| Loading the landing page for CSRF times out | Integration API v1 provides `GET /api/csrf`, which avoids landing-page statistics. Upgrade the integration client to use it. |
+| Sync-item times out during a full sync or queued API work | The item request is bounded by 60 seconds. Retry transient failures with backoff; increasing the landing-page timeout is unnecessary for clients using the lightweight bootstrap. |
+| JSON says `ready: true`, but `visible_files` is empty | Supply the intended virtual `mount`, then check `excluded_files`, TorBox tags, and that mount's directory, file and size filters. Readiness alone does not guarantee mount visibility. |
+| Metadata write failure / no usable files | The item no longer reports ready incorrectly. Check Warpbox logs, database write access, and the TorBox file list. |
+| HTTP 401 or 403 | Check configured Basic authentication, or refresh the CSRF token after a Warpbox restart. |
+| Files appear in Warpbox but Plex misses them | Check the rclone directory cache, filesystem access under Plex's account, and the matching library scan. Warpbox does not scan Plex. |
+
+See [On-demand sync and optional watchlist integration](watchlist-bridge.md) for
+the request contract and the separate plex_debrid delivery workflow. Existing
+standalone setups need no additional integration settings.
+
 ## Junk file at `__all__` root / open hangs forever
 
 **What you see:** Something like `output.jpg` at the root of `__all__`, open lags, logs show `CDN data still unavailable` with `status=404` and `content_type=text/html`.

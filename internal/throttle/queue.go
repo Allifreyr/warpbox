@@ -15,6 +15,7 @@ const queueBufferSize = 1024
 
 // Request represents a queued API call.
 type Request struct {
+	Context context.Context // optional per-request cancellation
 	Label   string
 	Execute func(ctx context.Context) error
 }
@@ -148,6 +149,20 @@ func (q *Queue) Enqueue(r Request) {
 	q.items <- r
 }
 
+// EnqueueContext admits cancellable work without blocking on a full queue forever.
+func (q *Queue) EnqueueContext(ctx context.Context, r Request) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.Context = ctx
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case q.items <- r:
+		return nil
+	}
+}
+
 // processLoop runs in a goroutine, receiving and executing requests at the
 // configured rate. It blocks on the channel when the queue is empty and
 // exits cleanly when the context is cancelled.
@@ -157,15 +172,31 @@ func (q *Queue) processLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case r := <-q.items:
-			// Pace the start through the (possibly shared) limiter. A long
-			// Execute on this queue does not delay another queue sharing
-			// the same limiter.
-			q.limiter.Wait(ctx)
-			if ctx.Err() != nil {
-				return
+			// Legacy callers keep the original worker context and behavior.
+			// Per-request work carries its own deadline and also stops when the
+			// worker stops, including while waiting for a limiter slot.
+			callCtx := ctx
+			cancel := func() {}
+			stop := func() bool { return false }
+			if r.Context != nil {
+				if r.Context.Err() != nil {
+					continue
+				}
+				callCtx, cancel = context.WithCancel(r.Context)
+				stop = context.AfterFunc(ctx, cancel)
 			}
-
-			err := r.Execute(ctx)
+			q.limiter.Wait(callCtx)
+			if callCtx.Err() != nil {
+				stop()
+				cancel()
+				if ctx.Err() != nil {
+					return
+				}
+				continue
+			}
+			err := r.Execute(callCtx)
+			stop()
+			cancel()
 
 			q.mu.Lock()
 			q.totalCalls++
