@@ -11,16 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Lightweight `GET /api/csrf` returns the integration CSRF token and `delivery_api: 1` without loading landing-page statistics. Uses the same optional HTTP Basic authentication as the landing page and disables response caching.
-- Opt-in JSON responses for `POST /actions/sync-item`, including explicit readiness, stored-file counts, and primary-video visibility/exclusions for an optional target virtual mount. Existing form fields and default text responses remain supported. See [On-demand sync and watchlist integration](docs/watchlist-bridge.md).
+- Opt-in JSON responses for `POST /actions/sync-item`, including explicit readiness, stored-file counts, and primary-video visibility/exclusions for an optional target virtual mount. Existing form fields and default text responses remain supported.
 
 ### Fixed
 - Single-item fetches respect cancellation while waiting for a full sync, queue capacity, a rate-limit slot, or a TorBox response. In-flight item requests also stop when their queue shuts down; ordinary playback queue calls retain their existing context behavior and shared rate budget.
 - Zero usable files and partial or failed metadata writes no longer report successful single-item readiness. Write failures return an error rather than a misleading success response.
 - Queue regression tests synchronize result delivery and cancellation flags correctly, eliminating two test-fixture races found by the Go race detector.
-
-### Compatibility
-- Optional integration support: Warpbox still runs independently of Plex and plex_debrid. Existing WebDAV paths, mount filters, soft-tag routing, and normal playback behavior are unchanged. No configuration or database migration is required for this release.
-- Persistent watchlist requests, retries, rclone cache invalidation, and Plex scan verification belong to the separately updated plex_debrid client. Upgrade Warpbox before using that client's delivery API v1 support.
 
 ## [v0.7.6-v0.8.5] - 2026-11-09
 
