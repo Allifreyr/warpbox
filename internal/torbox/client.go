@@ -433,8 +433,12 @@ func (c *Client) GetDownloadURL(ctx context.Context, torrentID, fileID int64, re
 
 	slog.Debug("torbox get_download_url", "torrent_id", torrentID, "file_id", fileID)
 
-	body, err := c.do(req)
+	var headers http.Header
+	body, err := c.doWithHeaders(req, &headers)
 	if err != nil {
+		return "", err
+	}
+	if err := downloadEnvelopeError(body, "torbox API error: ", parseRetryAfter(headers.Get("Retry-After"), time.Now())); err != nil {
 		return "", err
 	}
 
@@ -458,10 +462,6 @@ func (c *Client) GetDownloadURL(ctx context.Context, torrentID, fileID int64, re
 			)
 		}
 		return "", fmt.Errorf("torbox: decoding response: %w", err)
-	}
-
-	if env.Error != nil && *env.Error != "" {
-		return "", fmt.Errorf("torbox API error: %s", *env.Error)
 	}
 
 	slog.Debug("torbox get_download_url result", "has_url", env.Data != "")
@@ -490,8 +490,12 @@ func (c *Client) GetUsenetDownloadURL(ctx context.Context, usenetID, fileID int6
 
 	slog.Debug("torbox get_usenet_download_url", "usenet_id", usenetID, "file_id", fileID)
 
-	body, err := c.do(req)
+	var headers http.Header
+	body, err := c.doWithHeaders(req, &headers)
 	if err != nil {
+		return "", err
+	}
+	if err := downloadEnvelopeError(body, "torbox usenet API error: ", parseRetryAfter(headers.Get("Retry-After"), time.Now())); err != nil {
 		return "", err
 	}
 
@@ -515,10 +519,6 @@ func (c *Client) GetUsenetDownloadURL(ctx context.Context, usenetID, fileID int6
 			)
 		}
 		return "", fmt.Errorf("torbox: decoding usenet response: %w", err)
-	}
-
-	if env.Error != nil && *env.Error != "" {
-		return "", fmt.Errorf("torbox usenet API error: %s", *env.Error)
 	}
 
 	slog.Debug("torbox get_usenet_download_url result", "has_url", env.Data != "")
@@ -586,7 +586,11 @@ func (f requestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // do executes an HTTP request, reads the full body, and returns the body bytes.
 // The response body is always closed before returning.
-func (c *Client) do(req *http.Request) (result []byte, resultErr error) {
+func (c *Client) do(req *http.Request) ([]byte, error) {
+	return c.doWithHeaders(req, nil)
+}
+
+func (c *Client) doWithHeaders(req *http.Request, headers *http.Header) (result []byte, resultErr error) {
 	if err := req.Context().Err(); err != nil {
 		return nil, err
 	}
@@ -651,6 +655,9 @@ func (c *Client) do(req *http.Request) (result []byte, resultErr error) {
 		return nil, fmt.Errorf("torbox: request %s %s failed: %w", req.Method, req.URL.Path, err)
 	}
 	defer resp.Body.Close()
+	if headers != nil {
+		*headers = resp.Header.Clone()
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -673,13 +680,7 @@ func (c *Client) do(req *http.Request) (result []byte, resultErr error) {
 		// Surface the API error code (e.g. DATABASE_ERROR, BAD_TOKEN) so
 		// callers can classify failures. Keep "unexpected status 5" so
 		// IsRetryable still treats 5xx as transient.
-		var env struct {
-			Error *string `json:"error"`
-		}
-		if json.Unmarshal(body, &env) == nil && env.Error != nil && *env.Error != "" {
-			return nil, fmt.Errorf("torbox: unexpected status %d (%s)", resp.StatusCode, *env.Error)
-		}
-		return nil, fmt.Errorf("torbox: unexpected status %d", resp.StatusCode)
+		return nil, newAPIError(body, resp.StatusCode, parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()), "")
 	}
 
 	return body, nil
@@ -697,7 +698,7 @@ func truncateBody(body []byte) string {
 // IsRetryable reports whether a TorBox API error is likely transient and
 // worth retrying with exponential backoff. Returns false for nil errors.
 func IsRetryable(err error) bool {
-	if err == nil {
+	if err == nil || IsDailyBandwidthLimit(err) {
 		return false
 	}
 	s := err.Error()

@@ -31,13 +31,13 @@ cache:
   # Must be 1–1440 (1 minute to 24 hours). Default: 120
   # cdn_url_ttl_minutes: 120
 
-  # Automatically repair stale CDN URLs when a 404 is detected during proxy.
-  # When enabled, a CDN URL that returns 404 will be refreshed transparently.
+  # Automatically repair stale CDN URLs during proxying: 403/404 and
+  # recognized HTTP 400 Invalid Presigned Token responses.
   # Default: true
   # cdn_url_auto_repair: true
 
-  # Maximum number of retries for CDN proxy requests that fail with a 404
-  # (after CDN URL repair). 0 means no retries.
+  # Maximum stale-link repair retries per media request, including recovery
+  # handoffs. 0 means no retries. Unknown HTTP 400 errors are not refreshed.
   # Default: 2
   # cdn_url_repair_retries: 2
 

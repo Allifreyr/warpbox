@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -74,6 +75,9 @@ func sleepOrDone(ctx context.Context, d time.Duration) error {
 // counts one error, but at 1 per 5 minutes it would take 50+ to hit
 // maxErrorCount=10.
 func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *metadata.FileRecord) {
+	ctx, cancel := s.playbackContext(r.Context())
+	defer cancel()
+	r = s.withRepairBudget(r.WithContext(ctx))
 	// Parse the byte range, if present.
 	rangeHeader := r.Header.Get("Range")
 	var srvRange *httpRange
@@ -111,11 +115,21 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
+	if err := http.NewResponseController(w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return
+	}
 
 	pollInterval := cdnPollInterval
 	proxyClient := &http.Client{Timeout: time.Duration(s.cfg.CDNProxyTimeoutSeconds) * time.Second}
+	var repairedURL string
+	first := true
 
 	for {
+		wasPaused := s.quota.snapshot().Paused
+		quotaURL, quotaErr := s.waitForQuota(ctx, file)
+		if quotaErr != nil {
+			return
+		}
 		// Wait before fetch: shared per-item data cooldown (drain window).
 		if err := s.waitCDNDataCooldown(r.Context(), file.ItemID); err != nil {
 			slog.Debug("client disconnected while waiting for CDN data cooldown",
@@ -124,11 +138,29 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			return
 		}
 
-		cdnURL, fetchErr := s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
-		if fetchErr != nil {
-			cdnURL, fetchErr = s.fallbackFile(file)
+		cdnURL := repairedURL
+		repairedURL = ""
+		if wasPaused {
+			cdnURL = quotaURL
+		}
+		var fetchErr error
+		if (wasPaused || first) && cdnURL == "" {
+			cdnURL, fetchErr = s.store.GetCDNURL(file.ID)
+		}
+		first = false
+		if cdnURL == "" && fetchErr == nil {
+			cdnURL, fetchErr = s.fetchWithFallback(ctx, file)
+			if fetchErr == nil {
+				s.cacheCDNURL(file, cdnURL)
+			}
 		}
 		if fetchErr != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if isQuotaPause(fetchErr) {
+				continue
+			}
 			// Exponential backoff when rate-limited by TorBox's per-item
 			// requestdl limit. Keep doubling until max cap.
 			if strings.Contains(fetchErr.Error(), "unexpected status 429") {
@@ -153,14 +185,6 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			continue
 		}
 
-		// Cache the recovered CDN URL.
-		if s.cfg.CDNTtlMinutes > 0 {
-			expiry := time.Now().Add(time.Duration(s.cfg.CDNTtlMinutes) * time.Minute)
-			if err := s.store.SetCDNURL(file.ID, cdnURL, expiry); err != nil {
-				slog.Error("GET (hang): failed to cache CDN URL after recovery", "path", file.Path, "error", err)
-			}
-		}
-
 		slog.Info("CDN URL recovered, attempting data proxy",
 			"path", file.Path,
 			"source", file.Source,
@@ -175,7 +199,16 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			return
 		}
 
-		s.AcquireCDNConn()
+		if err := s.acquireCDNConn(ctx); err != nil {
+			return
+		}
+		if err := s.quota.check(); err != nil {
+			s.ReleaseCDNConn()
+			if isQuotaPause(err) {
+				continue
+			}
+			return
+		}
 		proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, cdnURL, http.NoBody)
 		if err != nil {
 			s.ReleaseCDNConn()
@@ -205,6 +238,23 @@ func (s *Server) handleGetCDNHang(w http.ResponseWriter, r *http.Request, file *
 			s.ReleaseCDNConn()
 			_, _ = s.correctFileSizeFromCDN416(file, cr, true)
 			return
+		}
+		if inspectCDN400(proxyResp, proxyReq, file) {
+			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
+			if !s.takeRepair(r) {
+				s.exhaustedTokenRepair(file, cdnURL)
+				return
+			}
+			u, err := s.refreshCDNURL(ctx, file, cdnURL)
+			if isQuotaPause(err) {
+				continue
+			}
+			if err != nil {
+				return
+			}
+			repairedURL = u
+			continue
 		}
 
 		switch classifyCDNDataResponse(status, ct) {

@@ -104,6 +104,11 @@ type LandingData struct {
 	TBPremiumExpires string
 	TBCreatedAt      string
 	TBHasAccount     bool // whether user info was successfully fetched
+	QuotaPaused      bool
+	QuotaProbing     bool
+	QuotaNext        string
+	QuotaLimit       string
+	QuotaUsage       string
 }
 
 // handleLanding serves the Warpbox branded landing page with runtime stats.
@@ -235,6 +240,20 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		data.TBIsPremium = ui.IsSubscribed
 		data.TBPremiumExpires = premiumExpires
 		data.TBCreatedAt = formatTorBoxDate(ui.CreatedAt)
+	}
+	quota := s.quota.snapshot()
+	data.QuotaPaused, data.QuotaProbing = quota.Paused, quota.Probing
+	if quota.Paused {
+		data.QuotaNext = quota.Next.UTC().Format(time.RFC3339)
+		if !quota.Probing && !quota.Next.After(time.Now()) {
+			data.QuotaNext = "Due on the next waiting media request"
+		}
+		if quota.Limit != nil {
+			data.QuotaLimit = fmt.Sprintf("%.2f TiB (%d bytes)", float64(*quota.Limit)/(1<<40), *quota.Limit)
+		}
+		if quota.Usage != nil {
+			data.QuotaUsage = fmt.Sprintf("%.2f TiB (%d bytes)", float64(*quota.Usage)/(1<<40), *quota.Usage)
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

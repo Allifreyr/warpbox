@@ -67,17 +67,58 @@ transfers and cached Anime metadata resolution keep their existing behavior;
 TMDB and GitHub requests have their own client and pacing. The configured cap
 does not coordinate separate Warpbox instances or other TorBox applications.
 
+### Daily bandwidth refusals and invalid signed links
+
+`DAILY_BANDWIDTH_LIMIT_EXCEEDED` is an explicit account restriction, separate
+from API request pacing and CDN connection concurrency. Warpbox reacts to that
+code rather than enforcing a guessed byte allowance or reset time. The limits
+and usage shown on the dashboard are the last values TorBox reported, not a live
+bandwidth meter or a guarantee about other apps using the account.
+
+While paused, new media reads wait without opening CDN connections, running
+per-file fallback loops, or marking torrents stale. Cached CDN redirects also
+wait; already-admitted transfers may finish. HEAD, directory browsing, metadata
+sync, and Anime mapping continue normally. One waiting reader checks for
+recovery after 5 minutes, backing off to 10, 20, then 30 minutes on further quota
+refusals. A longer valid `Retry-After` is respected on any failed recovery
+response, including ordinary rate limits and temporary server failures. If a
+source is permanently unavailable, later checks rotate through the read's
+eligible duplicates, one API attempt per interval. Rotation survives reader
+disconnects within the current pause; Anime checks stay within the requested
+release alias. No check runs without waiting media reads. Cancelling a reader
+stops its wait immediately. An already-started
+account check may finish after that reader disconnects so client timeouts cannot
+starve recovery; it is bounded to two minutes including queue/limiter waits,
+the configured API HTTP timeout still applies, and shutdown cancels it. No further
+checks start without waiting readers.
+Client timeouts still apply: Warpbox flushes waiting stream headers but sends no
+fake media bytes to keep connections alive.
+
+The dashboard reports pause/check state and the next eligible check in UTC;
+this is **not** an allowance-reset time. Only a successful nonempty download-link
+check resumes downloads. State is in memory and resets when Warpbox restarts.
+No new configuration or database migration is needed.
+
+`cache.cdn_url_auto_repair` and `cache.cdn_url_repair_retries` also control repair
+of CDN HTTP 400 responses identifying `Invalid Presigned Token`. Concurrent
+readers share a refresh, and the repair budget is retained through hang/recovery
+transitions. Repeated token failures stop after that budget and use the existing
+short per-file negative cache. Unrecognized 400s are not automatically refreshed;
+logs include safe status/classification, CDN host, range, content type, and request
+ID without dumping the response body or signed URL. Recovery applies to responses
+Warpbox proxies; clients following direct CDN redirects receive CDN errors directly.
+
+Reducing rclone read-ahead can reduce speculative downloads during large scans,
+but neither smaller buffers, API pacing, nor a concurrency limit establishes a
+daily byte budget across your TorBox account.
+
 ### CDN connections and rclone transfers
 
-Warpbox limits concurrent CDN data connections to `max_cdn_connections`. Each
-file being downloaded (or seeking within a file) uses one slot. Rclone's
-`--transfers` flag controls how many files rclone downloads at the same time,
-so if `--transfers` is set to 4 and `max_cdn_connections` is also 4, there are
-no slots left for seeks or new connections — requests queue up.
-
-A good starting point is keeping rclone's `--transfers` at or below
-`max_cdn_connections` minus 1. If `max_cdn_connections=4`, try
-`--transfers=2` or `--transfers=3`.
+`cache.max_cdn_connections` limits Warpbox's proxied CDN reads. For `rclone
+mount`, `--transfers` controls cached-file uploads; `--checkers` does not control
+VFS reads. Neither limits Plex's concurrent reads. Tune prefetch with
+`--buffer-size` and `--vfs-read-ahead`.
+See [rclone's VFS documentation](https://rclone.org/commands/rclone_mount/#vfs-performance).
 
 ### Sync interval and rclone poll interval
 

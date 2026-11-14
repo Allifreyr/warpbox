@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -159,49 +160,80 @@ func (s *Server) recordTorrentFailure(itemID int64) {
 	}
 }
 
-// getCDNURLWithRetry enqueues a TorBox requestdl call through the throttle
-// queue and returns the fresh CDN URL. Routes to the torrent or usenet
-// endpoint based on source. On failure it retries with exponential backoff
-// (cfg.CDNURLRetryBackoff * 1s, * 2s, * 4s, etc.) for up to
-// cfg.CDNURLRetryCount attempts. 429 responses use
-// cfg.CDNURL429BackoffSeconds (default 30s) instead of the exponential
-// backoff.
-func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID int64) (string, error) {
-	maxRetries := s.cfg.CDNURLRetryCount
-	baseBackoff := time.Duration(s.cfg.CDNURLRetryBackoff) * time.Second
-
+// downloadAttempt queues exactly one requestdl attempt. Only an elected quota
+// recovery probe can bypass the local pause; both paths use the shared limiter.
+func (s *Server) downloadAttempt(ctx context.Context, source metadata.FileSource, itemID, fileID int64, probe bool) (string, error) {
+	ctx, cancel := s.playbackContext(ctx)
+	defer cancel()
+	if !probe {
+		if err := s.quota.check(); err != nil {
+			return "", err
+		}
+	}
 	type result struct {
 		url string
 		err error
 	}
+	resCh := make(chan result, 1)
+	err := s.queue.EnqueueContext(ctx, throttle.Request{
+		Label: fmt.Sprintf("fetch CDN URL for file %d", fileID),
+		Execute: func(callCtx context.Context) error {
+			var u string
+			var err error
+			if !probe {
+				err = s.quota.check()
+			}
+			if err == nil {
+				err = callCtx.Err()
+			}
+			if err == nil {
+				if source == metadata.SourceUsenet {
+					u, err = s.torBox.GetUsenetDownloadURL(callCtx, itemID, fileID, false)
+				} else {
+					u, err = s.torBox.GetDownloadURL(callCtx, itemID, fileID, false)
+				}
+				if !probe {
+					s.quota.observe(err)
+				}
+			}
+			resCh <- result{u, err}
+			return err
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-s.quota.done:
+		return "", context.Canceled
+	case res := <-resCh:
+		return res.url, res.err
+	}
+}
+
+// getCDNURLWithRetry applies the existing retry policy, except that quota
+// refusals and cancellation immediately return to the caller without poisoning
+// per-file failure state. Ordinary 429s retain their configured longer backoff.
+func (s *Server) getCDNURLWithRetry(ctx context.Context, source metadata.FileSource, itemID, fileID int64) (string, error) {
+	ctx, cancel := s.playbackContext(ctx)
+	defer cancel()
+	maxRetries := s.cfg.CDNURLRetryCount
+	baseBackoff := time.Duration(s.cfg.CDNURLRetryBackoff) * time.Second
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		resCh := make(chan result, 1)
-
-		s.queue.Enqueue(throttle.Request{
-			Label: fmt.Sprintf("fetch CDN URL for file %d (attempt %d/%d)", fileID, attempt+1, maxRetries+1),
-			Execute: func(ctx context.Context) error {
-				var url string
-				var err error
-				if source == metadata.SourceUsenet {
-					url, err = s.torBox.GetUsenetDownloadURL(ctx, itemID, fileID, false)
-				} else {
-					url, err = s.torBox.GetDownloadURL(ctx, itemID, fileID, false)
-				}
-				resCh <- result{url, err}
-				return err
-			},
-		})
-
-		res := <-resCh
-
-		if res.err == nil {
-			return res.url, nil
+		u, fetchErr := s.downloadAttempt(ctx, source, itemID, fileID, false)
+		if fetchErr == nil {
+			return u, nil
+		}
+		if isQuotaPause(fetchErr) || ctx.Err() != nil || errors.Is(fetchErr, context.Canceled) {
+			return "", fetchErr
 		}
 
 		// Check if the error is retryable. 429, 5xx, timeouts, HTML
 		// responses, and network errors can all be transient.
-		isRetryable := torbox.IsRetryable(res.err)
+		isRetryable := torbox.IsRetryable(fetchErr)
 
 		if !isRetryable || attempt >= maxRetries {
 			// Non-retryable or out of attempts — record and return.
@@ -213,16 +245,16 @@ func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID i
 				"attempt", attempt+1,
 				"max_attempts", maxRetries+1,
 				"retry_backoff_base", s.cfg.CDNURLRetryBackoff,
-				"error", res.err,
+				"error", fetchErr,
 			)
-			return "", res.err
+			return "", fetchErr
 		}
 
 		// Exponential backoff: base * 2^attempt
 		wait := baseBackoff * (1 << attempt)
 		// 429 rate-limit errors get a long backoff. Once TorBox rate-limits,
 		// we need to give it breathing room rather than retrying aggressively.
-		if strings.Contains(res.err.Error(), "unexpected status 429") {
+		if strings.Contains(fetchErr.Error(), "unexpected status 429") {
 			wait = time.Duration(s.cfg.CDNURL429BackoffSeconds) * time.Second
 		}
 		slog.Warn("CDN URL fetch failed, retrying with backoff",
@@ -232,9 +264,11 @@ func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID i
 			"attempt", attempt+1,
 			"max_attempts", maxRetries+1,
 			"backoff_seconds", wait.Seconds(),
-			"error", res.err,
+			"error", fetchErr,
 		)
-		time.Sleep(wait)
+		if err := sleepOrDone(ctx, wait); err != nil {
+			return "", err
+		}
 	}
 
 	return "", fmt.Errorf("torbox: CDN URL fetch exhausted after %d retries", maxRetries)
@@ -242,7 +276,13 @@ func (s *Server) getCDNURLWithRetry(source metadata.FileSource, itemID, fileID i
 
 // fetchCDNURL is the public entry point for handleGet to obtain a CDN URL.
 // It checks the negative cache and circuit breaker before making any API calls.
-func (s *Server) fetchCDNURL(source metadata.FileSource, itemID, fileID int64) (string, error) {
+func (s *Server) fetchCDNURL(ctx context.Context, source metadata.FileSource, itemID, fileID int64) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := s.quota.check(); err != nil {
+		return "", err
+	}
 	key := cdnCacheKey(source, itemID, fileID)
 
 	// 1. Check negative cache for a recent failure on this exact file.
@@ -270,8 +310,11 @@ func (s *Server) fetchCDNURL(source metadata.FileSource, itemID, fileID int64) (
 	}
 
 	// 3. Attempt the API call with retry.
-	cdnURL, err := s.getCDNURLWithRetry(source, itemID, fileID)
+	cdnURL, err := s.getCDNURLWithRetry(ctx, source, itemID, fileID)
 	if err != nil {
+		if isQuotaPause(err) || ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			return "", err
+		}
 		// Cache the error in the negative cache so subsequent requests for the
 		// same file fail fast without hitting the API.
 		ttl := time.Duration(s.cfg.NegativeCacheTTLSeconds) * time.Second
@@ -292,7 +335,7 @@ func (s *Server) fetchCDNURL(source metadata.FileSource, itemID, fileID int64) (
 // successful URL. If none succeed, returns the last error.
 // This provides resilience when the primary item has been deleted from
 // TorBox but alternative duplicates still exist in the database.
-func (s *Server) tryCDNFallback(path string) (string, error) {
+func (s *Server) tryCDNFallback(ctx context.Context, path string) (string, error) {
 	alternatives, err := s.store.GetFileAlternatives(path)
 	if err != nil {
 		return "", fmt.Errorf("querying alternatives: %w", err)
@@ -303,7 +346,10 @@ func (s *Server) tryCDNFallback(path string) (string, error) {
 
 	var lastErr error
 	for _, alt := range alternatives {
-		altURL, altErr := s.fetchCDNURL(alt.Source, alt.ItemID, alt.FileID)
+		altURL, altErr := s.fetchCDNURL(ctx, alt.Source, alt.ItemID, alt.FileID)
+		if isQuotaPause(altErr) || ctx.Err() != nil {
+			return "", altErr
+		}
 		if altErr == nil {
 			slog.Info("CDN URL obtained from alternative item",
 				"path", path,
@@ -316,4 +362,19 @@ func (s *Server) tryCDNFallback(path string) (string, error) {
 		lastErr = altErr
 	}
 	return "", fmt.Errorf("all alternatives failed: %w", lastErr)
+}
+
+func (s *Server) fetchWithFallback(ctx context.Context, file *metadata.FileRecord) (string, error) {
+	u, err := s.fetchCDNURL(ctx, file.Source, file.ItemID, file.FileID)
+	if err == nil || isQuotaPause(err) || ctx.Err() != nil {
+		return u, err
+	}
+	u, altErr := s.fallbackFile(ctx, file)
+	if isQuotaPause(altErr) || ctx.Err() != nil {
+		return "", altErr
+	}
+	if altErr != nil {
+		return "", errors.Join(err, altErr)
+	}
+	return u, nil
 }

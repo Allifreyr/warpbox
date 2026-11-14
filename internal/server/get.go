@@ -70,9 +70,21 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Range") == "" {
 		cdnURL, cdnErr := s.store.GetCDNURL(file.ID)
 		if cdnErr == nil && cdnURL != "" {
-			slog.Debug("GET: redirecting to CDN", "id", file.ID)
-			http.Redirect(w, r, cdnURL, http.StatusFound)
-			return
+			ctx, cancel := s.playbackContext(r.Context())
+			defer cancel()
+			if _, err := s.waitForQuota(ctx, file); err != nil {
+				if ctx.Err() == nil {
+					http.Error(w, "CDN URL unavailable", http.StatusBadGateway)
+				}
+				return
+			}
+			// A cached URL may have expired while the account was paused.
+			cdnURL, cdnErr = s.store.GetCDNURL(file.ID)
+			if cdnErr == nil && cdnURL != "" {
+				slog.Debug("GET: redirecting to CDN", "id", file.ID)
+				http.Redirect(w, r, cdnURL, http.StatusFound)
+				return
+			}
 		}
 		// If we don't have a cached CDN URL, fall through to streamFileContent
 		// which will fetch one and proxy.
@@ -87,12 +99,27 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 // circuit breaker), byte-range requests, and streaming the response to the
 // client via a proxy from the CDN.
 func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file *metadata.FileRecord) {
+	ctx, cancel := s.playbackContext(r.Context())
+	defer cancel()
+	r = s.withRepairBudget(r.WithContext(ctx))
 	// Negative TorBox file ids are not usable with requestdl. file_id 0 is valid
 	// (TorBox often uses 0 for a real file in multi-file torrents).
 	if file.FileID < 0 {
 		slog.Warn("GET: refusing stream for unusable file_id",
 			"path", file.Path, "item_id", file.ItemID, "file_id", file.FileID)
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if rang := r.Header.Get("Range"); rang != "" {
+		if _, err := parseRange(rang, file.Size); err != nil {
+			http.Error(w, "Invalid range", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+	}
+	if err := s.quota.check(); err != nil {
+		if isQuotaPause(err) {
+			s.handleGetCDNHang(w, r, file)
+		}
 		return
 	}
 
@@ -106,11 +133,12 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 
 	if cdnURL == "" {
 		// No cached CDN URL — fetch one via the throttle queue.
-		cdnURL, err = s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
+		cdnURL, err = s.fetchWithFallback(ctx, file)
 		if err != nil {
-			// Primary fetch failed — try alternatives (same path, different TorBox item).
-			cdnURL, err = s.fallbackFile(file)
-			if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if !isQuotaPause(err) {
 				// All alternatives also failed. Instead of returning an error (which
 				// rclone counts toward maxErrorCount=10, causing Plex to trash the file),
 				// send success headers immediately and hold the connection while polling
@@ -123,9 +151,9 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 					"alternatives", file.Path != "",
 					"error", err,
 				)
-				s.handleGetCDNHang(w, r, file)
-				return
 			}
+			s.handleGetCDNHang(w, r, file)
+			return
 		}
 
 		// Cache the CDN URL if TTL > 0.
@@ -167,10 +195,23 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 	slog.Debug("GET: proxying from CDN", "id", file.ID, "offset", srvRange.Start)
 
 	client := &http.Client{Timeout: time.Duration(s.cfg.CDNProxyTimeoutSeconds) * time.Second}
-	maxAttempts := s.cfg.CDNURLRepairRetries + 1
-
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		s.AcquireCDNConn()
+	for {
+		if err := s.quota.check(); err != nil {
+			if isQuotaPause(err) {
+				s.handleGetCDNHang(w, r, file)
+			}
+			return
+		}
+		if err := s.acquireCDNConn(ctx); err != nil {
+			return
+		}
+		if err := s.quota.check(); err != nil {
+			s.ReleaseCDNConn()
+			if isQuotaPause(err) {
+				s.handleGetCDNHang(w, r, file)
+			}
+			return
+		}
 
 		proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, cdnURL, http.NoBody)
 		if err != nil {
@@ -207,45 +248,44 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		}
 
 		// Check for stale CDN URL.
-		if (proxyResp.StatusCode == http.StatusForbidden || proxyResp.StatusCode == http.StatusNotFound) &&
-			s.cfg.CDNURLAutoRepair && attempt < maxAttempts-1 {
+		knownToken := inspectCDN400(proxyResp, proxyReq, file)
+		if (proxyResp.StatusCode == http.StatusForbidden || proxyResp.StatusCode == http.StatusNotFound || knownToken) && s.takeRepair(r) {
 
 			proxyResp.Body.Close()
 			s.ReleaseCDNConn()
 			slog.Warn("stale CDN URL detected, refreshing",
 				"path", file.Path,
-				"attempt", attempt+1,
 				"max_retries", s.cfg.CDNURLRepairRetries,
 				"status", proxyResp.StatusCode,
 			)
 
-			newURL, refreshErr := s.fetchCDNURL(file.Source, file.ItemID, file.FileID)
+			newURL, refreshErr := s.refreshCDNURL(ctx, file, cdnURL)
 			if refreshErr != nil {
-				// Primary refresh failed — try alternatives.
-				newURL, refreshErr = s.fallbackFile(file)
-				if refreshErr != nil {
-					slog.Error("GET: CDN URL refresh failed (primary + alternatives)",
-						"path", file.Path,
-						"attempt", attempt+1,
-						"error", refreshErr,
-					)
-					http.Error(w, "CDN URL refresh failed", http.StatusBadGateway)
+				if ctx.Err() != nil {
 					return
 				}
-				slog.Info("CDN URL refresh succeeded via alternative item",
+				if isQuotaPause(refreshErr) {
+					s.handleGetCDNHang(w, r, file)
+					return
+				}
+				slog.Error("GET: CDN URL refresh failed (primary + alternatives)",
 					"path", file.Path,
+					"error", refreshErr,
 				)
+				http.Error(w, "CDN URL refresh failed", http.StatusBadGateway)
+				return
 			}
 
 			// Update the cached CDN URL.
 			cdnURL = newURL
-			if s.cfg.CDNTtlMinutes > 0 {
-				expiry := time.Now().Add(time.Duration(s.cfg.CDNTtlMinutes) * time.Minute)
-				if err := s.store.SetCDNURL(file.ID, cdnURL, expiry); err != nil {
-					slog.Error("GET: failed to update cached CDN URL", "path", file.Path, "error", err)
-				}
-			}
 			continue // retry with the fresh URL
+		}
+		if knownToken {
+			proxyResp.Body.Close()
+			s.ReleaseCDNConn()
+			s.exhaustedTokenRepair(file, cdnURL)
+			http.Error(w, "CDN returned status 400 (invalid signed link)", http.StatusBadGateway)
+			return
 		}
 
 		status := proxyResp.StatusCode
@@ -272,19 +312,18 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 			proxyResp.Body.Close()
 			s.ReleaseCDNConn()
 			if (status == http.StatusForbidden || status == http.StatusNotFound) &&
-				attempt == maxAttempts-1 {
+				r.Context().Value(repairBudgetKey{}).(*repairBudget).remaining == 0 {
 				key := cdnCacheKey(file.Source, file.ItemID, file.FileID)
 				ttl := time.Duration(s.cfg.NegativeCacheTTLSeconds) * time.Second
 				s.negativeCacheMu.Lock()
 				s.negativeCache[key] = &negativeCacheEntry{
-					err:       fmt.Errorf("CDN returned %d after %d repair attempts", status, maxAttempts),
+					err:       fmt.Errorf("CDN returned %d after bounded repair", status),
 					expiresAt: time.Now().Add(ttl),
 				}
 				s.negativeCacheMu.Unlock()
 				slog.Warn("CDN proxy exhausted, caching failure in negative cache",
 					"path", file.Path,
 					"status", status,
-					"attempts", maxAttempts,
 					"negative_cache_ttl", ttl.Seconds(),
 				)
 			}
@@ -334,8 +373,6 @@ func (s *Server) streamFileContent(w http.ResponseWriter, r *http.Request, file 
 		return
 	}
 
-	// All attempts exhausted without success.
-	http.Error(w, "CDN proxy error after retries", http.StatusBadGateway)
 }
 
 type httpRange struct {

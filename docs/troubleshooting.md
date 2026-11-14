@@ -50,9 +50,9 @@ This page covers common problems, what they mean, and how to fix them.
 | HTTP 401 or 403 | Check configured Basic authentication, or refresh the CSRF token after a Warpbox restart. |
 | Files appear in Warpbox but Plex misses them | Check the rclone directory cache, filesystem access under Plex's account, and the matching library scan. Warpbox does not scan Plex. |
 
-See [On-demand sync and optional watchlist integration](watchlist-bridge.md) for
-the request contract and the separate plex_debrid delivery workflow. Existing
-standalone setups need no additional integration settings.
+See the [integration API contract](tech-spec.md#actions-actions) for request and
+response fields. Delivery retries, rclone cache refreshes, and Plex scan checks
+belong to the integration client. Standalone setups need no additional settings.
 
 ## Junk file at `__all__` root / open hangs forever
 
@@ -90,6 +90,32 @@ standalone setups need no additional integration settings.
 | Multiple warpbox instances sharing one API key | Each instance has its own throttle. One key, one instance. |
 | A single torrent causing repeated failures | Check the landing page for circuit breaker status — a stuck torrent can burn rate budget on retries. |
 
+### Daily bandwidth quota exhausted
+
+`DAILY_BANDWIDTH_LIMIT_EXCEEDED` is a separate TorBox account restriction, not
+the normal API requests-per-minute limit. Warpbox pauses new downloads across
+this process without marking each torrent stale. Browsing and metadata sync
+remain available. The dashboard shows the last reported usage/limit and next
+eligible recovery check, not an allowance-reset time.
+
+Waiting media reads share controlled recovery checks at 5/10/20/30-minute
+intervals, respecting longer `Retry-After` values. No new check starts without
+waiting readers. Client timeouts may still close a waiting stream; restarting
+Warpbox forgets the pause but does not reset TorBox's allowance. Smaller rclone
+read-ahead may reduce speculative downloads, but API pacing and connection
+limits do not enforce a daily byte budget across all apps on the account.
+
+### CDN HTTP 400
+
+Recognized `Invalid Presigned Token` responses can refresh the URL when
+`cache.cdn_url_auto_repair` is enabled, within `cache.cdn_url_repair_retries`.
+Concurrent repairs share the refresh. Other 400 responses remain failures;
+check the safe diagnostic fields in the `CDN bad request` log instead of
+assuming every 400 is an expired link. Responses followed through a direct
+CDN redirect are handled by the client, outside Warpbox's repair path.
+
+See [quota and signed-link recovery](config-tuning.md#daily-bandwidth-refusals-and-invalid-signed-links).
+
 ## Files not showing up in my media server
 
 **What you see:** Mount looks empty, or recent TorBox additions don't appear.
@@ -104,7 +130,7 @@ standalone setups need no additional integration settings.
 | Cause | Fix |
 |-------|-----|
 | `max_cdn_connections` too low | Default is 4. If you have multiple simultaneous streams, increase it (max 64). |
-| `--transfers` in rclone too high | Keep `--transfers` at or below `max_cdn_connections` minus 1 so there's headroom for seek requests. |
+| rclone read-ahead too large | Reduce `--buffer-size` / `--vfs-read-ahead` during large scans; `--transfers` does not limit mounted reads. |
 | Chunk size too small | `--vfs-read-chunk-size 32M` is the default. Lower values mean more round-trips per second. |
 | Network bandwidth to TorBox CDN | Geographic distance to CDN servers is outside warpbox's control. |
 | CDN URL expiring mid-playback | Auto-repair handles this. Check logs for `stale CDN URL detected`. If frequent, reduce `cdn_url_ttl_minutes`. |

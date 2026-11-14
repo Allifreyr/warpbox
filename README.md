@@ -108,8 +108,9 @@ usenet item without waiting for the next full sync. Scripts can use the same
 target-mount visibility using the lightweight `GET /api/csrf` bootstrap.
 
 Warpbox works independently of Plex and plex_debrid. Existing standalone setups
-need no additional settings. The optional [watchlist bridge guide](docs/watchlist-bridge.md)
-explains the API, soft-tag shelves, and the separate plex_debrid delivery workflow.
+need no additional settings. See the [integration API contract](docs/tech-spec.md#actions-actions)
+for readiness and visibility fields. Watchlist persistence, delivery retries,
+rclone cache refreshes, and Plex scan verification belong to the integration client.
 
 ### Bare mount (without Docker)
 
@@ -224,19 +225,19 @@ Warpbox periodically syncs the TorBox directory structure into a local SQLite da
 
 ### 2. CDN URL caching with defences
 
-Every CDN download link from TorBox expires. Warpbox caches these URLs in SQLite with a configurable TTL so repeated requests to the same file don't hit the API. If a URL fetch fails, the failure is cached (negative cache) so retries don't hammer the API. If a specific torrent keeps failing, a circuit breaker trips and shorts all requests to that torrent for a cooldown period - preventing cascading failures.
+Every CDN download link from TorBox expires. Warpbox caches these URLs in SQLite with a configurable TTL so repeated requests to the same file don't hit the API. Stale-link repair handles 403/404 and recognized HTTP 400 `Invalid Presigned Token` responses through bounded, shared refreshes. Ordinary URL-fetch failures use a negative cache and per-item circuit breaker; an explicit daily-quota refusal uses the shared pause described below.
 
 ### 3. Blocking throttle
 
-If rclone fires off 200 concurrent API requests (common during a library import), warpbox doesn't fail. It places all 200 in a blocking queue and trickles them to TorBox at a safe, configured rate (250 requests per minute or whatever you set). Metadata sync runs on a separate queue that shares the same rate budget, so a slow sync can never hold up playback. Rclone sees a slow disk. Plex doesn't crash. The API stays within its limit.
+Playback and metadata sync use separate serial queues with one shared rate budget (default 250 requests per minute). Every TorBox API HTTP attempt passes through that budget, including sync pages, retries, redirect hops, and startup account information. A slow sync response does not hold the limiter, and cancelled admission sends no request. Cached browsing remains local; API pacing does not impose a daily byte budget or coordinate other applications.
 
 ### 4. Hang/poll mode
 
-When the TorBox CDN can't be reached, warpbox doesn't return an error - it sends success HTTP headers immediately (so rclone doesn't count a failure) and polls for recovery every 15 seconds. Once the CDN is back, it streams the data as normal. If the client disconnects, the poll loop exits cleanly.
+For recoverable CDN failures, Warpbox flushes media headers and waits for recovery, backing off repeated rate limits instead of streaming error pages. Explicit `DAILY_BANDWIDTH_LIMIT_EXCEEDED` responses pause new downloads across this process. Waiting readers share one quota check after 5 minutes, increasing to 10, 20, then 30 minutes on further quota refusals and respecting longer provider delays. Metadata sync and browsing continue. Client timeouts still apply; Warpbox sends no fake media bytes. See [quota handling and signed-link recovery](docs/config-tuning.md#daily-bandwidth-refusals-and-invalid-signed-links).
 
 ### 5. Smart redirect for full-file downloads
 
-When a request has no byte Range header (a full-file download), warpbox issues an HTTP 302 redirect straight to the CDN URL, taking itself out of the data path entirely. This saves a CDN connection slot and offloads bandwidth for complete file transfers.
+When a WebDAV request has no byte Range header and a valid cached CDN URL exists, Warpbox can issue an HTTP 302 redirect directly to the CDN. Redirects wait during a quota pause. An uncached full-file read is proxied, and responses fetched directly by the client cannot be inspected or repaired by Warpbox.
 
 ## Detailed rclone Configuration
 

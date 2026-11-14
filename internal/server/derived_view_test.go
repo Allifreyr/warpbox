@@ -140,7 +140,7 @@ func TestAnimeDuplicateFallbackUsesAliasCandidates(t *testing.T) {
 	if err != nil || file == nil {
 		t.Fatal(file, err)
 	}
-	u, err := s.fallbackFile(file)
+	u, err := s.fallbackFile(ctx, file)
 	if err != nil || u != "https://cdn.example/alternate" {
 		t.Fatal(u, err)
 	}
@@ -185,7 +185,7 @@ func TestAnimeFallbackDoesNotCrossVariantAliases(t *testing.T) {
 	if file.Size != 1000 {
 		t.Fatalf("wrong requested variant: %+v", file)
 	}
-	if u, err := s.fallbackFile(file); err == nil || u != "" {
+	if u, err := s.fallbackFile(ctx, file); err == nil || u != "" {
 		t.Fatalf("crossed alias boundary: %q %v", u, err)
 	}
 }

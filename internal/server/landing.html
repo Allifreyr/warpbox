@@ -267,6 +267,17 @@
   </table>
 
   <table>
+    <tr><th colspan="2">TorBox downloads</th></tr>
+    <tr><td>Quota pause</td><td>{{if .QuotaPaused}}{{if .QuotaProbing}}Checking recovery{{else}}Paused by TorBox{{end}}{{else}}Not paused{{end}}</td></tr>
+    {{if .QuotaPaused}}
+    {{if .QuotaUsage}}<tr><td>Last reported usage</td><td>{{.QuotaUsage}}</td></tr>{{end}}
+    {{if .QuotaLimit}}<tr><td>Last reported limit</td><td>{{.QuotaLimit}}</td></tr>{{end}}
+    <tr><td>Next eligible check (UTC)</td><td>{{.QuotaNext}}</td></tr>
+    <tr><td colspan="2">Recovery is checked only while media reads are waiting. This is not an allowance reset time. Metadata browsing and sync remain available.</td></tr>
+    {{end}}
+  </table>
+
+  <table>
     <tr><th colspan="2">Logging</th></tr>
     <tr><td>Format</td><td>{{.LogFormat}}</td></tr>
     <tr><td>Level</td><td id="log-level-value">{{.LogLevel}}</td></tr>

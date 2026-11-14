@@ -7,9 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.7.6-v0.8.7] - 2026-11-14
+
+### Added
+
+- TorBox download-quota status on the dashboard, including the last reported usage and limit while paused, recovery state, and the next eligible check time.
+
 ### Fixed
-- Apply `throttle.requests_per_minute` to each TorBox HTTP attempt, including all torrent/Usenet sync pages, page retries, redirect hops, single-item fetches, playback download-link requests, and startup account information. Separate sync/playback execution queues remain in place without charging an extra rate-limit slot. Cancellation while awaiting admission sends no request.
-- Dashboard API-call totals, last-minute counts, and success/failure charts now count individual HTTP attempts instead of whole queued operations. Shared 429 responses are counted once, including responses whose body cannot be read. Existing metric names and historical statistics remain unchanged.
+
+- Apply the shared `throttle.requests_per_minute` budget to every TorBox API HTTP attempt, including torrent/Usenet pagination, retries, redirects, single-item fetches, playback link requests, and startup account information. Sync and playback retain separate serial queues without charging an extra limiter slot.
+- Count actual HTTP attempts in dashboard totals and charts. Each HTTP 429 is counted once, including unreadable responses; cancelled admission sends no request and records no attempt. Existing metric names and historical data are retained.
+- Recognize `DAILY_BANDWIDTH_LIMIT_EXCEEDED` and pause new downloads across this Warpbox process instead of repeatedly retrying each file or marking individual torrents stale. Metadata sync and directory browsing continue.
+- Check quota recovery only with waiting media reads, backing off through 5, 10, 20, and 30 minutes and honoring longer `Retry-After` values on failed checks. Permanently unavailable sources rotate through eligible duplicates across checks, one request per interval; Anime release boundaries remain enforced.
+- Repair proxied CDN HTTP 400 `Invalid Presigned Token` responses with bounded, shared URL refreshes that preserve newer cached links. Unrecognized 400s retain their failure behavior with safe diagnostics.
+- Respect playback cancellation during queue admission, retries, CDN-slot waits, quota recovery, and shutdown. Waiting streams flush headers without sending placeholder media bytes; an already-started quota check is shared and time-bounded.
+
+### Compatibility
+
+- No configuration changes, new API keys, or database migration are required. Existing library paths, mount filters, and optional integration API v1 remain supported.
+- CDN repair uses the existing `cache.cdn_url_auto_repair` and `cache.cdn_url_repair_retries` settings. Direct WebDAV CDN redirects remain supported; repair can inspect only responses proxied by Warpbox.
+- Quota state is in memory and resets on restart. Warpbox reacts to TorBox's reported restriction; it does not assume a universal daily allowance or reset time, or control other apps using the account.
 
 ## [v0.7.6-v0.8.6] - 2026-11-09
 

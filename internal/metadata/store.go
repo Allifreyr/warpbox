@@ -421,6 +421,17 @@ func (s *Store) SetCDNURL(internalID int64, cdnURL string, expiresAt time.Time) 
 	return err
 }
 
+// InvalidateCDNURLIfCurrent prevents delayed failures from clearing a newer URL.
+func (s *Store) InvalidateCDNURLIfCurrent(internalID int64, failedURL string) (bool, error) {
+	result, err := s.db.Exec(`UPDATE files SET cdn_url = '', cdn_url_expires = '', updated = datetime('now')
+		WHERE id = ? AND cdn_url = ?`, internalID, failedURL)
+	if err != nil {
+		return false, fmt.Errorf("invalidating CDN URL: %w", err)
+	}
+	n, err := result.RowsAffected()
+	return n > 0, err
+}
+
 // GetCDNURL returns a cached CDN URL for a file identified by its internal ID.
 func (s *Store) GetCDNURL(internalID int64) (string, error) {
 	row := s.db.QueryRow(`

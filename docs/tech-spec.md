@@ -49,10 +49,10 @@ If you change the code, update this spec.
    - Auto-runs schema migrations (`CREATE TABLE IF NOT EXISTS`)
    - `defer metadataStore.Close()` — closed on process exit
 
-10. **Throttle limiter + queues.** One shared limiter paces the *start* of every TorBox API call, so `throttle.requests_per_minute` is a collective cap:
+10. **Throttle limiter + queues.** One shared limiter paces each TorBox API HTTP attempt, so `throttle.requests_per_minute` is a collective cap:
     - `limiter := throttle.NewLimiter(cfg.Throttle.RequestsPerMinute)`
-    - `requestQueue := throttle.NewQueueWithLimiter(..., limiter)` — playback `requestdl`
-    - `syncQueue := throttle.NewQueueWithLimiter(..., limiter)` — metadata sync (and `SyncItem`)
+    - `requestQueue := throttle.NewExecutionQueue(..., limiter)` — playback `requestdl`
+    - `syncQueue := throttle.NewExecutionQueue(..., limiter)` — metadata sync (and `SyncItem`)
     - Each queue has a buffered channel (capacity 1024) and its own `processLoop`, so a slow sync call never blocks playback
     - `requestQueue.Start(ctx)` and `syncQueue.Start(ctx)`
 
@@ -60,6 +60,7 @@ If you change the code, update this spec.
     - Hardcoded base URL: `"https://api.torbox.app"`
     - HTTP client timeout from `torbox.request_timeout_seconds` (default 90s) via `SetTimeout`
     - Wires `HTTP429Callback`: `limiter.Record429` — counted once on the shared limiter
+    - Wires request hooks to `limiter.BeginRequest` / `limiter.EndRequest`; pagination, retries, redirects, and direct startup calls all pass through the same HTTP boundary
 
 12. **Signal context.** `ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM); defer stop()` — the root context is cancelled when SIGINT or SIGTERM is received. All components derive their contexts from this root.
 
@@ -75,7 +76,7 @@ If you change the code, update this spec.
 15. **Server config assembly.** A `server.Config` struct is populated from all config sections:
     - **Server:** `ListenAddr`, `Version`, `EnablePprof`, `ConfigPath`
     - **Cache:** `CDNTtlMinutes`, `CDNURLAutoRepair`, `CDNURLRepairRetries`, `CDNURLRetryBackoff`, `CDNURLRetryCount`, `NegativeCacheTTLSeconds`, `CircuitBreakerFailures`, `CircuitBreakerWindowSec`, `CircuitBreakerStaleMin`, `NegativeCacheMaxEntries`, `CircuitBreakerMaxEntries`, `CleanupIntervalSeconds`, `MaxCDNConnections`
-    - **Throttle:** `RequestsPerMinute` (for landing page display)
+    - **Throttle:** `RequestsPerMinute` (for landing page display), `APIStats: limiter.RequestStats` (shared HTTP-attempt counters)
     - **Logging:** `LogFormat`, `LogLevel`, `LevelVar` (shared pointer for runtime switching)
     - **Sync:** `SyncIntervalMinute`, `SyncLimit` (for landing page display)
     - **Stats:** `StatsIntervalSeconds`, `StatsRetentionHours`, `StatsChartMinutes`
@@ -88,13 +89,13 @@ If you change the code, update this spec.
     - Builds virtual path filters from config
     - Registers all HTTP routes (see Section 2)
     - Starts the cleanup goroutine (see Section 7)
-    - `srv.SetSyncQueue(syncQueue)` so landing-page/stats counters aggregate both queues
+    - `srv.SetSyncQueue(syncQueue)` retains the sync queue reference; production dashboard/stats counters come from the shared limiter through `APIStats`
 
 17. **Sync status callback.** `srv.SetSyncStatus(syncWorker.Status)` — wires the sync worker's `Status()` method so the landing page can show sync state.
 
 18. **HTTP server start.** `go srv.Start(ctx)` → `http.ListenAndServe(s.cfg.ListenAddr, s.mux)` inside a goroutine, errors sent to a `chan error`.
 
-19. **User info fetch.** A background goroutine calls `torBoxClient.GetUserInfo(ctx)` with a 10-second timeout. On success, stores the result via `srv.SetTorBoxUserInfo(ui)` — displayed on the landing page.
+19. **User info fetch.** A background goroutine calls `torBoxClient.GetUserInfo(ctx)` with a 10-second timeout, using the same HTTP limiter and counters even though it is outside a queue. On success, stores the result via `srv.SetTorBoxUserInfo(ui)` — displayed on the landing page.
 
 20. **Blocking wait.** `select { case <-ctx.Done(): "shutting down" | case err := <-serverErr: fatal error }` — the process blocks here until either:
     - A signal is received (SIGINT/SIGTERM) via the signal context
@@ -102,7 +103,7 @@ If you change the code, update this spec.
 
 ### Graceful Shutdown
 
-- On signal, `srv.Shutdown(ctx)` is called with a 30-second timeout context, which invokes `http.Server.Shutdown()` — draining active connections and stopping the listener.
+- On signal, `srv.Shutdown(ctx)` is called with a 30-second timeout context. It cancels playback waits, proxied transfers, and any shared quota check before invoking `http.Server.Shutdown()` to stop the listener and drain handlers.
 - The `defer metadataStore.Close()` runs, flushing WAL.
 - The sync worker's loop exits when its derived context is cancelled (via context propagation from the signal context).
 - The throttle queues' `processLoop` goroutines exit when their contexts are cancelled.
@@ -221,7 +222,7 @@ Not-ready results remain HTTP 200. Invalid input/mount returns 400, invalid
 authentication 401, invalid CSRF 403, and missing TorBox items 404. Fetch/write
 failures and deadline expiry return 502. Errors remain plain text. Metadata
 readiness is independent of mount-filter eligibility, rclone caches and Plex
-indexing. See [the integration guide](watchlist-bridge.md) for request examples.
+indexing. Client integrations own delivery retries and scan verification.
 
 ### Landing Page (`/`)
 
@@ -230,7 +231,7 @@ See Section 7. Renders a Go `html/template` with runtime stats, configuration va
 
 ## 3. CDN Streaming & Fallback Chain
 
-**Key files:** `internal/server/get.go`
+**Key files:** `internal/server/get.go`, `get_cdn.go`, `get_hang.go`, `quota.go`, `cdn_repair.go`
 
 ### GET Handler Flow (`handleGet`)
 
@@ -238,18 +239,20 @@ See Section 7. Renders a Go `html/template` with runtime stats, configuration va
 
 2. **Empty path** → `serveDirListing(w, reqPath, "1", libFilter, root)` — serves a WebDAV Multi-Status XML directory listing (same as PROPFIND).
 
-3. **File lookup.** `s.store.GetFileByPath(virtualPath)`:
+3. **File lookup.** `s.resolveView(ctx, root, virtualPath)` uses the raw store or the configured derived view:
    - Found → proceed to streaming
    - `nil` + `ListDir` returns results → virtual directory → `serveDirListing`
    - `nil` + no children → `404 Not Found`
 
-4. **Redirect optimization.** If the request has **no Range header** and a **cached CDN URL exists** (`s.store.GetCDNURL(file.ID)` returns a non-expired URL), issue a `302 Found` redirect directly to the CDN URL. This avoids consuming a CDN connection slot for full-file downloads and preserves existing behaviour where rclone fetches metadata efficiently. The `/http/` browser does NOT use this optimization — it always proxies through `streamFileContent` to set proper Content-Type headers for browser inline playback.
+4. **Redirect optimization.** If the request has **no Range header** and a **cached CDN URL exists**, wait for any quota pause, re-read the cache in case it expired while waiting, then issue a `302 Found` redirect if the URL is still available. This avoids consuming a proxy CDN slot. Uncached reads are proxied. The `/http/` browser always proxies through `streamFileContent`. CDN responses fetched directly by the redirected client cannot be inspected by Warpbox.
 
 5. **Streaming.** `s.streamFileContent(w, r, file)` — the main CDN proxy pipeline.
 
 ### CDN URL Resolution (`fetchCDNURL`)
 
-Examines three layers before making an API call:
+Checks request cancellation and the shared quota pause before the following
+layers. A paused account returns to the shared wait without touching the
+negative cache or per-item failure tracker.
 
 1. **Negative cache check.**
    - Key format: `"<source>:<itemID>:<fileID>"` — e.g. `"torrent:123:456"` or `"usenet:789:012"`
@@ -261,18 +264,19 @@ Examines three layers before making an API call:
    - If `time.Now().Before(tracker.staleUntil)`, return error — the API call is skipped. A warning is logged.
    - If the stale period has expired, delete the tracker (auto-reset) and proceed.
 
-3. **API call with retry.** `getCDNURLWithRetry(source, itemID, fileID)` — see below.
+3. **API call with retry.** `getCDNURLWithRetry(ctx, source, itemID, fileID)` — see below.
 
-4. **On failure:** Write the error to the negative cache under the file's key with `NegativeCacheTTLSeconds` TTL (default 30s).
+4. **On ordinary failure:** Write the error to the negative cache under the file's key with `NegativeCacheTTLSeconds` TTL (default 30s). Quota refusals and cancellation bypass this step. `fetchWithFallback` preserves the primary error when alternatives also fail and stops fallback immediately on quota refusal or cancellation; derived fallbacks stay within the requested alias.
 
 ### Retry / Backoff (`getCDNURLWithRetry`)
 
 - **Max attempts** = `cdn_url_retry_attempts + 1` (default 2 — 1 initial + 1 retry).
-- Each attempt enqueues a `throttle.Request` that calls `GetDownloadURL()` (torrent) or `GetUsenetDownloadURL()` (usenet) depending on source.
-- **Retryable errors:** HTTP 429 or 5xx (detected by string matching `"unexpected status 429"` or `"unexpected status 5"`).
+- Each attempt uses cancellable queue admission and calls `GetDownloadURL()` (torrent) or `GetUsenetDownloadURL()` (usenet). The quota gate is checked before admission and again inside the worker. Each actual HTTP attempt uses the shared limiter.
+- **Retryable errors:** Ordinary HTTP 429, 5xx, timeouts, HTML responses, and supported network errors through `torbox.IsRetryable`. The exact daily-quota error is excluded.
 - **Backoff:** Exponential `baseBackoff * 2^attempt` where `baseBackoff = cdn_url_retry_backoff` seconds (default 1s).
 - **429 special backoff:** `cdn_url_429_backoff_seconds` (default 30s, regardless of attempt number) — once TorBox rate-limits, aggressive retries would make it worse.
 - **Non-retryable or exhausted:** Call `recordTorrentFailure(itemID)` (see circuit breaker below), return error.
+- **Quota or cancellation:** Return immediately without per-file negative caching or recording an item failure. Backoff sleeps also stop on cancellation.
 
 ### Circuit Breaker (`recordTorrentFailure`)
 
@@ -287,33 +291,35 @@ Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
 
 ### CDN Proxy (`streamFileContent`)
 
-1. **Get/refresh CDN URL.** If no cached URL, fetch via the playback throttle queue. Cache with `CDNTtlMinutes` TTL (default 120) if set.
-
-2. **Range parsing.** `parseRange(rangeHeader, file.Size)`:
+1. **Validation.** Reject negative file IDs and invalid ranges before requesting a download link. `parseRange(rangeHeader, file.Size)`:
    - Format: `"bytes=start-end"` or suffix `"bytes=-N"` (last N bytes)
    - Single range only (rclone uses single ranges)
    - Returns `httpRange{Start, End, Length}` or `416 Range Not Satisfiable`
    - No Range header → full file range `{0, file.Size-1, file.Size}`
 
-3. **Proxy request.** `http.Client{Timeout: 30s}` → `GET cdnURL` with `Range: bytes=start-end`.
+2. **Quota gate and URL resolution.** Paused reads enter shared waiting mode. Otherwise, use the cached URL or fetch through the playback queue and permitted fallbacks. Newly fetched URLs use the configured TTL (default 120 minutes).
+
+3. **Proxy request.** Acquire a CDN slot with cancellation support, recheck the quota gate, then `GET cdnURL` with `Range: bytes=start-end`. The HTTP timeout is `cdn_proxy_timeout_seconds` (default 30 seconds). Release the slot before waiting or refreshing a link.
 
 4. **Response handling:**
-   - **403/404 + `cdn_url_auto_repair=true` + retries remaining** (`cdn_url_repair_retries`, default 2):
-     - Re-fetch CDN URL from TorBox via `fetchCDNURL()`
-     - Update cached URL with new TTL
-     - Retry the proxy request with the fresh URL
+   - **403/404 or recognized 400 invalid-presigned-token response**, with auto-repair enabled and budget remaining:
+     - Share one refresh per source/item/file across concurrent callers
+     - Reuse a newer cached URL when available; otherwise conditionally clear only the rejected URL and refresh through the existing queue/limiter
+     - Retain the same per-read repair budget through stream/hang handoffs; a quota refusal during refresh enters shared waiting mode
+     - Retry with the new URL, preserving the requested range
    - **429 or 5xx (transient CDN error):**
      - Invalidate cached CDN URL (set to "" with past expiry)
      - Enter hang/poll mode (see below)
    - **Other non-2xx:** `502 Bad Gateway` to client
-   - **403/404 exhausted (no retries remaining):** File key is added to the negative cache with `NegativeCacheTTLSeconds` TTL. Subsequent requests for this file skip the API and enter hang/poll mode directly, preventing retry storms.
+   - **Repeated invalid signed tokens:** Stop after the repair budget, conditionally invalidate the rejected URL, and use a short per-file negative-cache entry without marking the torrent stale. Unknown 400s do not trigger a refresh; logs retain safe diagnostic fields without response bodies or signed URLs.
+   - **403/404 exhausted (no retries remaining):** The file key receives the existing short negative-cache entry; the stream returns an error.
    - **200/206 with text Content-Type:** TorBox's CDN may return HTTP 200/206
      with a text/HTML/JSON body when rate-limiting instead of a proper 429.
      If the response Content-Type is `text/*`, `html`, or `json`, treat it as
      a transient error: invalidate the cached CDN URL and enter hang/poll mode.
    - **200/206 (binary):** Proceed to streaming
 
-5. **CDN connection semaphore.** Before the upstream CDN `client.Do` (not only before `io.Copy`), `AcquireCDNConn()` blocks until a slot is available. `ReleaseCDNConn()` returns the slot when the attempt ends (error path or finished stream). Capacity: `max_cdn_connections` (default 4). Channel-based with pre-filled tokens.
+5. **CDN connection semaphore.** `acquireCDNConn(ctx)` precedes upstream `client.Do` and returns promptly on cancellation. `ReleaseCDNConn()` returns the token when the attempt ends. Capacity is `max_cdn_connections` (default 4). Quota waits and URL refreshes hold no token; already-admitted data transfers may finish during a pause.
 
 6. **Streaming.** Set response headers:
    - `Content-Type`: from file's MIME type, or `"application/octet-stream"`
@@ -324,17 +330,45 @@ Per-item (torrent or usenet) failure tracker stored in `s.torrentFailures`:
    - `io.Copy(w, proxyResp.Body)` — streams CDN → client
    - Copy errors (context cancelled, broken pipe, connection reset) are logged at DEBUG only — these are normal client-side disconnects from Plex seeking or buffering
 
-7. **Retry exhaustion.** If all CDN repair retries are exhausted without success, returns `502 Bad Gateway` with "CDN proxy error after retries".
+7. **Retry exhaustion.** Failed repairs return `502 Bad Gateway` before media headers are sent. In hang mode, headers are already committed, so the handler stops without appending error-page bytes.
 
 ### Hang/Poll Mode (`handleGetCDNHang`)
 
-Entered when the CDN URL cannot be obtained (API failure, circuit breaker trip) or the CDN returns transient errors (429/5xx / disguised text body). The goal is to avoid returning an error to rclone, which counts errors toward `maxErrorCount=10`:
+Entered when the CDN URL cannot be obtained, a quota pause is active, or CDN data returns transient errors (429/5xx / disguised text body):
 
-1. **Immediate success headers.** Send `200 OK` or `206 Partial Content` with full response headers (Content-Type, Content-Length, Accept-Ranges, Content-Range) BEFORE any data is available. This makes rclone think the connection succeeded (it will wait for data).
+1. **Immediate success headers.** Send and flush `200 OK` or `206 Partial Content` with media headers before data is available. No fake media bytes are sent; client timeouts still apply.
 
 2. **Per-item data cooldown.** After a CDN *data* 429/5xx (or disguised text error), mark `item_id` cool for at least `cdnPollInterval` (15s). Hang waits on this before re-proxying so a successful `requestdl` does not immediately re-hammer the CDN.
 
 3. **Poll / recovery loop.** Fetch URL with exponential backoff on requestdl 429 (15s → 5min max). On URL success: acquire semaphore, GET range from CDN. On data 429/5xx/text-error: do **not** stream the body; extend cooldown, back off, retry. On 200/206 binary media: `io.Copy` and exit. Client disconnect → clean exit (context cancelled), logged at DEBUG.
+
+Quota waits happen before ordinary polling and consume no CDN slot or queue
+worker. After recovery, readers reuse the probe's cached URL where applicable.
+Recognized token 400s use the same repair budget as the initial stream; 403/404
+remain permanent failures in hang mode.
+
+### Shared Daily-Quota Recovery
+
+`torbox.APIError` preserves the exact `DAILY_BANDWIDTH_LIMIT_EXCEEDED` code,
+optional nonnegative byte counts, and a parsed `Retry-After`. The code is
+recognized on non-200 responses and HTTP 200 download-link error envelopes.
+Quota refusals pause new download attempts across this process, including
+cached redirects, while metadata sync and local browsing continue.
+
+One waiting reader elects a shared check after 5 minutes. Further quota
+refusals back off to 10, 20, then 30 minutes; any failed check's longer valid
+`Retry-After` takes precedence. Each scheduled check makes one download-link
+attempt through the normal queue/limiter. Permanently unavailable candidates
+rotate through eligible duplicates over later checks, preserving derived alias
+boundaries. At most 1024 in-memory rotation hints survive reader disconnects;
+they clear after recovery or a new pause.
+
+Only a successful nonempty link clears the pause. A check starts only with
+demand, but its two-minute account-owned context can outlive the reader that
+started it, including queue/limiter wait time. The configured API HTTP timeout
+also applies; shutdown cancels the check. No new idle check is scheduled.
+State is not persisted. No daily allowance or reset time is inferred, and other
+applications are outside this process's limits.
 
 ### Byte-Range Parsing (`parseRange`)
 
@@ -397,7 +431,8 @@ API error is likely transient and worth retrying with exponential backoff. It re
 - Non-JSON responses (`invalid character '<'`) — Cloudflare error pages returned with HTTP 200
 - Network errors: `connection refused`, `no such host`, `i/o timeout`, `EOF`
 
-Returns `false` for `nil` errors, 4xx (except 429), and application-level API errors.
+Returns `false` for `nil` errors, the typed daily-quota refusal (even on HTTP
+429), other 4xx, and application-level API errors.
 Used by both the CDN URL fetch pipeline (`getCDNURLWithRetry`) and the metadata sync
 worker to decide whether to retry a failed API call.
 
@@ -445,11 +480,11 @@ func (c *Client) listGeneric(ctx, endpoint, label, params) ([]Torrent, error)
 
 The core request executor:
 
-1. `c.httpClient.Do(req)` — network error returns `"torbox: request failed"`
-2. `io.ReadAll(resp.Body)` — body always closed via `defer resp.Body.Close()` before returning
-3. **429 detection:** If `resp.StatusCode == 429`, calls `c.HTTP429Callback()` (wired in main.go to `limiter.Record429`) — BEFORE returning the error
-4. **Non-200:** Logs a warning with status, URL path (not full URL — avoids leaking API key in query params), and truncated body (512 bytes max). Returns `fmt.Errorf("torbox: unexpected status %d", code)`
-5. **200:** Returns body bytes
+1. Check cancellation, then invoke the shared admission hook before the first HTTP request. Waiting for this first slot is outside the HTTP client's timeout but still bounded by the caller's context.
+2. Copy the HTTP client and wrap its transport for this call. Each redirect hop completes the previous attempt and obtains its own limiter slot without modifying the supplied client's redirect policy or transport. Later hops remain within the HTTP timeout.
+3. Observe every HTTP 429 once at the transport boundary, even if its body cannot be read. Read and close the final response body.
+4. For non-200 responses, log status, endpoint path, and a truncated API body; return a typed `APIError` preserving the legacy error text, error code, and valid `Retry-After`.
+5. Complete attempt accounting after status/body handling. HTTP 200 application errors are classified by the endpoint after this boundary and do not reclassify the HTTP counters. Download endpoints decode typed error envelopes before treating `data` as a URL.
 
 ### Error Handling
 
@@ -619,6 +654,7 @@ SQLite schemas are versioned and migrations are handled dynamically. Schema chan
 | `GetFileByPath(path)` | `SELECT ... FROM files WHERE path = ?` | Returns `*FileRecord` or `nil` on `sql.ErrNoRows`. |
 | `GetFileByFileID(source, fileID)` | `SELECT ... FROM files WHERE source = ? AND file_id = ? LIMIT 1` | For CDN URL lookups when path-based lookup is not available. |
 | `SetCDNURL(internalID, url, expiresAt)` | `UPDATE files SET cdn_url=?, cdn_url_expires=?, updated=datetime('now') WHERE id=?` | Retries up to 3 times with exponential backoff (100ms, 200ms, 400ms) if the database is locked. Increments `dbLockErrors` counter on lock failures. |
+| `InvalidateCDNURLIfCurrent(internalID, failedURL)` | Clear URL/expiry only where both internal ID and the cached URL match | Delayed failures cannot erase a different replacement URL. No network call or long transaction. |
 | `GetCDNURL(internalID)` | `SELECT cdn_url, cdn_url_expires FROM files WHERE id = ?` | Returns `""` if: row not found, url is empty, or expiry time is in the past (RFC 3339 UTC comparison). |
 | `ListItemDirs()` | `SELECT DISTINCT item_id, source, CASE WHEN instr(path,'/')>0 THEN substr(...) ELSE path END FROM files` | Returns all distinct top-level directories for change detection. |
 | `CountFiles()` | `SELECT COUNT(*) FROM files` | Landing page display. |
@@ -691,9 +727,9 @@ This means charts show call rate per interval, not monotonically increasing tota
 
 | Metric | Type | Source | Description |
 |--------|------|--------|-------------|
-| `api_calls_success` | Delta (count) | `throttle.Queue.Stats().SuccessfulCalls` | Successful TorBox API calls in the last interval |
-| `api_calls_failed` | Delta (count) | `throttle.Queue.Stats().FailedCalls` | Failed API calls in the last interval |
-| `api_calls_429` | Delta (count) | `throttle.Queue.Stats().HTTP429Calls` | 429 rate-limit responses in the last interval |
+| `api_calls_success` | Delta (count) | Shared `Limiter.RequestStats().SuccessfulCalls` | Successful TorBox HTTP attempts in the last interval |
+| `api_calls_failed` | Delta (count) | Shared `Limiter.RequestStats().FailedCalls` | Failed TorBox HTTP attempts in the last interval |
+| `api_calls_429` | Delta (count) | Shared `Limiter.RequestStats().HTTP429Calls` | HTTP 429 responses, counted once before body handling |
 | `db_lock_errors` | Delta (count) | `s.store.DBLockErrors()` | SQLite lock errors in the last interval |
 | `gc_cycles` | Delta (count) | `runtime.ReadMemStats(&mem).NumGC` | Go GC cycles in the last interval |
 | `sys_mb` | Gauge | `mem.Sys / 1024 / 1024` | Total OS memory allocated by the Go runtime (MB) |
@@ -811,7 +847,7 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 | Key | Type | Default | Validation | Description |
 |-----|------|---------|------------|-------------|
 | `cdn_url_ttl_minutes` | int | `120` | 1–1440 | CDN URL cache TTL |
-| `cdn_url_auto_repair` | bool (pointer) | `true` | — | Auto-repair stale CDN URLs on 403/404 |
+| `cdn_url_auto_repair` | bool (pointer) | `true` | — | Repair stale CDN URLs on 403/404 and recognized HTTP 400 invalid-presigned-token responses |
 | `cdn_url_repair_retries` | int (pointer) | `2` | 0–10 | Max CDN proxy retries per request |
 | `cdn_url_retry_backoff` | int (pointer) | `1` | 1–60 | CDN URL fetch retry backoff base (seconds) |
 | `cdn_url_retry_attempts` | int (pointer) | `1` | 0–10 | Max CDN URL fetch retry attempts |
@@ -829,7 +865,7 @@ YAML. Parsed with `gopkg.in/yaml.v3` (preserves comments on round-trip). The con
 #### 4. `throttle`
 | Key | Type | Default | Validation | Description |
 |-----|------|---------|------------|-------------|
-| `requests_per_minute` | int | `250` | 10–1000 | Collective TorBox API rate limit (metadata sync + playback) |
+| `requests_per_minute` | int | `250` | 10–1000 | Shared TorBox HTTP-attempt budget, including every page, retry, redirect, and startup call |
 
 #### 5. `logging`
 | Key | Type | Default | Validation | Description |
@@ -991,11 +1027,15 @@ This adapter is applied to protected routes via `s.mux.With(requireAuth).Get(...
 
 ## 10. Throttle Queue
 
-**Key files:** `internal/throttle/queue.go`
+**Key files:** `internal/throttle/queue.go`, `internal/torbox/client.go`
 
 ### Design
 
-Start-paced rate limiter implemented as **two** blocking request queues that share one `Limiter`. The design philosophy is: **never fail fast**, and **never let metadata sync starve playback**. Burst traffic from Plex is queued on the playback queue and trickled to the TorBox API at a safe rate. Metadata sync runs on a separate queue with its own `processLoop`, so a slow usenet mylist page cannot delay `requestdl`. The shared limiter keeps `requests_per_minute` a collective cap. If a queue is full, `Enqueue` blocks until space is available — the HTTP handler waits, not the caller.
+Production uses **two serial execution queues** sharing one `Limiter`. Each
+TorBox HTTP attempt obtains admission at the client boundary, including every
+page, retry, redirect hop, and startup account request. Queue execution itself
+does not charge a slot. A slow sync response holds no limiter lock, so playback
+can use available shared capacity through its separate worker.
 
 ### Rate Calculation
 
@@ -1003,33 +1043,15 @@ Start-paced rate limiter implemented as **two** blocking request queues that sha
 rate = time.Minute / time.Duration(requestsPerMinute)
 ```
 
-- Default: 250 RPM → `rate = 240ms` (minimum 240ms between calls)
-- Free TorBox plan limit: 300 RPM → rate must be set ≤ 300
+- Default: 250 RPM → `rate = 240ms` (minimum 240ms between admitted starts)
 - Config validation: 10–1000 RPM
+- The configured budget covers this process only. It does not coordinate other applications or establish a CDN byte allowance.
 
-### Queue Structure
+### Queue Construction
 
-```go
-type Limiter struct {
-    mu       sync.Mutex
-    rate     time.Duration // start-to-start minimum spacing
-    lastCall time.Time
-    http429  int64         // global 429 count (not per-queue)
-}
-
-type Queue struct {
-    mu              sync.Mutex
-    items           chan Request  // buffered channel, capacity 1024
-    limiter         *Limiter      // private, or shared across queues
-    rate            time.Duration // for Stats().RequestsPerMinute
-    totalCalls      int64
-    callWindow      []time.Time
-    successfulCalls int64
-    failedCalls     int64
-}
-```
-
-The buffered channel (`queueBufferSize = 1024`) absorbs short bursts. If all 1024 slots are occupied, the next `Enqueue()` blocks the producer.
+- `NewExecutionQueue(rpm, limiter)` serializes operations without queue-level pacing; production uses this with the hooked TorBox client.
+- `NewQueue` and `NewQueueWithLimiter` retain legacy self-paced execution for other callers and tests. Combining these with a hooked client would charge an additional wait, so production does not use them.
+- Each queue has a 1024-entry buffered channel, its own worker, and internal operation counters. The shared limiter owns production HTTP-attempt counters and the sliding request window.
 
 ### Enqueue
 
@@ -1044,7 +1066,7 @@ func (q *Queue) Enqueue(r Request) {
 - `Execute` (`func(ctx context.Context) error`) — the actual API call
 
 `EnqueueContext(ctx, request)` is the cancellable admission path used by
-single-item sync. It returns when `ctx` ends even if the buffer is full. The
+single-item sync and playback URL attempts. It returns when `ctx` ends even if the buffer is full. The
 optional `Request.Context` carries that request's deadline; execution combines
 request cancellation with worker shutdown. Canceled queued work is skipped,
 including while waiting for a limiter slot. Ordinary `Enqueue` callers keep the
@@ -1055,8 +1077,8 @@ original worker context and behavior.
 Runs in a background goroutine started by `Start(ctx)`:
 
 1. **Receive:** `select { case <-ctx.Done(): return | case r := <-q.items: }` — blocks on empty queue, exits on shutdown
-2. **Throttle:** `limiter.Wait(ctx)` — start-to-start spacing on the (possibly shared) limiter. If `ctx` is cancelled while waiting, the loop exits without running Execute.
-3. **Execute:** `err := r.Execute(ctx)` — runs the API call. A long Execute does not hold the limiter, so the other queue can start.
+2. **Context:** Skip cancelled work; combine request cancellation with worker shutdown. Legacy self-paced queues wait on the limiter here; production execution-only queues do not.
+3. **Execute:** `err := r.Execute(callCtx)` runs the operation. Its TorBox client invokes `BeginRequest` / `EndRequest` for each HTTP attempt. A long response holds no limiter lock.
 4. **Stats update** (under lock):
    - `totalCalls++`
    - On error: `failedCalls++`; logged at DEBUG only (caller owns ERROR-level logging)
@@ -1077,18 +1099,27 @@ type Stats struct {
 }
 ```
 
-`Stats()` recomputes `CallsLastMinute` on each call by scanning `callWindow` for timestamps within the last 60 seconds. This is O(n) on the window size (typically small — max 250 entries at 240ms spacing).
+`Limiter.RequestStats()` supplies production dashboard and chart values through
+`server.Config.APIStats`. `BeginRequest` records a start after successful
+admission; `EndRequest` records success/failure after HTTP status and body
+handling. Followed redirects complete the prior attempt before the next hop's
+admission. Later JSON/application validation does not change the HTTP result.
+Cancelled admission records no attempt. The request window is trimmed to the
+last minute; historical SQLite metrics retain their existing names and values.
+
+`Queue.Stats()` retains internal operation counters. When `APIStats` is absent,
+the server retains its legacy queue-statistics fallback for other callers/tests.
 
 ### 429 Detection
 
-- TorBox client's `do()` calls `HTTP429Callback()` when `resp.StatusCode == 429`
+- The TorBox client's per-call transport wrapper invokes `HTTP429Callback()` for each HTTP 429, even if reading its body later fails
 - Wired in `main.go`: `torBoxClient.HTTP429Callback = limiter.Record429`
-- Counted once on the shared limiter. `Queue.Record429` forwards to the limiter. Server `throttleStats()` does not sum 429s across queues (that would double-count).
+- Counted once on the shared limiter. `Queue.Record429` remains a forwarding helper; production accounting does not add each queue's copy of the shared count.
 
 ### Stress Characteristics
 
 - **Maximum sustained rate:** 250 RPM default, up to 1000 RPM configured.
-- **Burst absorption:** 1024-item buffer allows absorbing spikes. At 240ms spacing, a full buffer represents ~4 minutes of queued work.
-- **Blocking behaviour:** When buffer is full, `handleGet` (which calls `Enqueue`) blocks. Plex/jellyfin sees a slow response but not an error. This is intentional — Plex counts errors (`maxErrorCount=10`) far more severely than slow responses.
-- **Concurrency:** Two `processLoop` goroutines (sync + playback). Each queue still serializes its own requests. The shared limiter paces *starts* collectively.
+- **Burst absorption:** A 1024-operation buffer absorbs spikes; an operation can contain several individually paced HTTP attempts, so buffer size does not imply a fixed drain time.
+- **Blocking behaviour:** Admission waits for buffer space and respects per-request cancellation. Quota waits occur outside the queue and CDN semaphore; already-queued download operations recheck the pause before calling TorBox.
+- **Concurrency:** Two `processLoop` goroutines (sync + playback), each serializing its own work. Limiter locking covers admission/accounting only, not network I/O.
 - **Backpressure:** Downstream components route through the appropriate queue (`syncQueue` for metadata, `requestQueue` for `requestdl`). There is no priority queue.

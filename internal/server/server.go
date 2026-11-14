@@ -72,7 +72,12 @@ type Server struct {
 	torrentFailuresMu sync.Mutex
 
 	// CDN connection semaphore: limits concurrent proxy connections to TorBox CDN.
-	cdnSem chan struct{}
+	cdnSem       chan struct{}
+	quota        *quotaController
+	playbackCtx  context.Context
+	stopPlayback context.CancelFunc
+	repairMu     sync.Mutex
+	repairs      map[string]*cdnRepairFlight
 
 	// Per-item cooldown after CDN *data* 429/5xx so hang/poll does not immediately
 	// re-hammer the CDN once requestdl returns a fresh URL (D-015c).
@@ -199,16 +204,21 @@ func New(cfg Config, store *metadata.Store, torBox *torbox.Client, queue *thrott
 	}
 
 	csrfToken := generateCSRFToken()
+	playbackCtx, stopPlayback := context.WithCancel(context.Background())
 
 	s := &Server{
-		cfg:       cfg,
-		store:     store,
-		torBox:    torBox,
-		queue:     queue,
-		root:      webdavRoot,
-		mux:       chi.NewRouter(),
-		startTime: time.Now(),
-		csrfToken: csrfToken,
+		cfg:          cfg,
+		store:        store,
+		torBox:       torBox,
+		queue:        queue,
+		root:         webdavRoot,
+		mux:          chi.NewRouter(),
+		startTime:    time.Now(),
+		csrfToken:    csrfToken,
+		quota:        newQuotaController(),
+		playbackCtx:  playbackCtx,
+		stopPlayback: stopPlayback,
+		repairs:      make(map[string]*cdnRepairFlight),
 
 		negativeCache:            make(map[string]*negativeCacheEntry),
 		torrentFailures:          make(map[int64]*torrentFailureTracker),
@@ -485,6 +495,7 @@ func virtualPathName(path string) string {
 
 // StopCleanup stops the periodic cleanup goroutine. Intended for tests.
 func (s *Server) StopCleanup() {
+	s.stopDownloads()
 	close(s.cleanupStopCh)
 }
 
@@ -936,8 +947,31 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Shutdown gracefully shuts down the HTTP server with a timeout context.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.stopDownloads()
 	if s.httpServer != nil {
 		return s.httpServer.Shutdown(ctx)
 	}
 	return nil
+}
+
+func (s *Server) stopDownloads() {
+	if s.stopPlayback != nil {
+		s.stopPlayback()
+	}
+	if s.quota != nil {
+		s.quota.close()
+	}
+}
+
+func (s *Server) acquireCDNConn(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.cdnSem:
+		if err := ctx.Err(); err != nil {
+			s.ReleaseCDNConn()
+			return err
+		}
+		return nil
+	}
 }

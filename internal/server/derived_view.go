@@ -32,14 +32,11 @@ func (s *Server) resolveView(ctx context.Context, root, p string) (*metadata.Fil
 	return s.store.GetFileByPath(p)
 }
 
-func (s *Server) fallbackFile(file *metadata.FileRecord) (string, error) {
+func (s *Server) fallbackFile(ctx context.Context, file *metadata.FileRecord) (string, error) {
 	if file.ViewPath == "" {
-		return s.tryCDNFallback(file.Path)
+		return s.tryCDNFallback(ctx, file.Path)
 	}
-	if s.cfg.DerivedView == nil {
-		return "", fmt.Errorf("derived view unavailable for path %q", file.ViewPath)
-	}
-	alts, err := s.cfg.DerivedView.Alternatives(context.Background(), file.ViewPath)
+	alts, err := s.alternativeFiles(ctx, file)
 	if err != nil {
 		return "", err
 	}
@@ -48,7 +45,10 @@ func (s *Server) fallbackFile(file *metadata.FileRecord) (string, error) {
 			continue
 		}
 		var u string
-		u, err = s.fetchCDNURL(alt.Source, alt.ItemID, alt.FileID)
+		u, err = s.fetchCDNURL(ctx, alt.Source, alt.ItemID, alt.FileID)
+		if isQuotaPause(err) || ctx.Err() != nil {
+			return "", err
+		}
 		if err == nil {
 			return u, nil
 		}
@@ -57,4 +57,17 @@ func (s *Server) fallbackFile(file *metadata.FileRecord) (string, error) {
 		return "", fmt.Errorf("no alternatives for derived path %q", file.ViewPath)
 	}
 	return "", err
+}
+
+// alternativeFiles keeps quota probes and playback repairs within the same
+// source boundary. In particular, derived release aliases cannot use raw-path
+// alternatives that belong to a different variant.
+func (s *Server) alternativeFiles(ctx context.Context, file *metadata.FileRecord) ([]metadata.FileRecord, error) {
+	if file.ViewPath == "" {
+		return s.store.GetFileAlternatives(file.Path)
+	}
+	if s.cfg.DerivedView == nil {
+		return nil, fmt.Errorf("derived view unavailable for path %q", file.ViewPath)
+	}
+	return s.cfg.DerivedView.Alternatives(ctx, file.ViewPath)
 }

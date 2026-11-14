@@ -20,18 +20,23 @@ Each setting below has a purpose. Read through them once, then adjust the few th
 |------|-------------|-----|
 | `--vfs-read-chunk-size` | `32M` | How much data rclone fetches in a single request to warpbox. Each request = one call to the TorBox CDN. 32 MB is big enough to be efficient (not many round-trips) but small enough to arrive quickly. |
 | `--vfs-read-chunk-size-limit` | `256M` | When rclone sees you're playing a file sequentially (e.g. watching a movie), it gradually doubles the chunk size up to this limit. Fewer chunk requests = less CDN overhead as playback continues. |
-| `--vfs-read-ahead` | `256M` | How far ahead rclone pre-fetches data beyond your current position. Imagine you're at minute 5 of a video — rclone quietly downloads up to minute 10 in the background. That makes seeking instant. 256 MB covers about 2 minutes of 1080p video or 15 seconds of a 4K remux. |
-| `--buffer-size` | `128M` | Memory buffer per open file. Data passes through this RAM buffer on its way to disk. 128 MB can hold two chunks at once (one being written to disk, one being downloaded), which is plenty. |
+| `--vfs-read-ahead` | `256M` | Extra disk read-ahead in full-cache mode, beyond the memory buffer. Larger values fetch more speculative data. |
+| `--buffer-size` | `128M` | Memory buffer per open file. Larger buffers can increase speculative downloads during short probes. |
+
+For large scans, try `--buffer-size 16M --vfs-read-ahead 0` to reduce prefetch.
+Playback may buffer more. This does not enforce a daily byte budget.
 
 ## Concurrency & timeouts
 
 | Flag | Recommended | Why |
 |------|-------------|-----|
-| `--transfers` | `2` | How many files rclone downloads at the same time. Keep this low — warpbox only opens 4 CDN connections total, and each file stream uses at least one slot. |
-| `--checkers` | `8` | How many files rclone scans in parallel during library refreshes. This only reads metadata (name, size, type) — it does NOT download anything. Warpbox serves metadata from a local SQLite database, so more checkers = faster scans with zero API cost. |
-| `--timeout` | `300s` | How long rclone waits for warpbox to respond before giving up. When the TorBox CDN has a temporary hiccup, warpbox holds the connection open and retries every 15 seconds. 5 minutes gives warpbox 20 attempts to recover. |
+| `--transfers` | `2` | Controls cached-file uploads on mounts, not concurrent playback reads. |
+| `--checkers` | `8` | Has no effect on VFS reads; it does not limit Plex scans. |
+| `--timeout` | `300s` | I/O idle timeout. Quota waits can exceed this and cause client retries; it does not set Warpbox's recovery interval. |
 | `--contimeout` | `30s` | How long rclone waits to establish the initial network connection. 30 seconds is more than enough on a local network. |
 | `--low-level-retries` | `3` | How many times rclone retries a failed request before calling it an error. Catches brief network blips. |
+
+See [rclone's VFS documentation](https://rclone.org/commands/rclone_mount/#vfs-performance).
 
 ## Caching & metadata
 

@@ -31,7 +31,10 @@ The raw directory under `/__all__/` shows all your TorBox content in its origina
    - **Disable or set a long interval on "Scan my library periodically"** — rclone's `--poll-interval` handles change detection. You don't need Plex polling too.
 6. Click **Add Library**. Plex will scan and fetch metadata.
 
-Plex probes each file for codecs, resolution, and duration — mostly small byte-range requests that warpbox serves from cache. The initial scan of a large library may take a while but should stay within TorBox rate limits.
+Plex probes files for codecs, resolution, and duration. When rclone has not
+cached the requested bytes, these probes require CDN data. Warpbox's API
+pacing does not impose a daily byte budget; a large scan can still consume
+substantial account bandwidth. See [quota handling](config-tuning.md#daily-bandwidth-refusals-and-invalid-signed-links).
 
 ## Jellyfin
 

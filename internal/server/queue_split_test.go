@@ -47,7 +47,7 @@ func TestPlaybackNotBlockedBySync(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		url, err := srv.fetchCDNURL(metadata.SourceTorrent, 1, 10)
+		url, err := srv.fetchCDNURL(context.Background(), metadata.SourceTorrent, 1, 10)
 		done <- result{url, err}
 	}()
 
