@@ -285,7 +285,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove live API credentials from repo — switch to `.template` files, refs #143
 - Fix pre-release audit documentation issues across multiple tickets, refs #109 #110 #138 #139
 
-[Unreleased]: https://github.com/Allifreyr/warpbox/compare/v0.7.6-v0.8.5...HEAD
+[Unreleased]: https://github.com/Allifreyr/warpbox/compare/v0.7.6-v0.8.7...HEAD
+[v0.7.6-v0.8.7]: https://github.com/Allifreyr/warpbox/compare/v0.7.6-v0.8.6...v0.7.6-v0.8.7
+[v0.7.6-v0.8.6]: https://github.com/Allifreyr/warpbox/compare/v0.7.6-v0.8.5...v0.7.6-v0.8.6
 [v0.7.6-v0.8.5]: https://github.com/Allifreyr/warpbox/compare/v0.7.6-v0.8.4...v0.7.6-v0.8.5
 [v0.7.6-v0.8.4]: https://github.com/Allifreyr/warpbox/compare/v0.7.6-v0.8.3...v0.7.6-v0.8.4
 [v0.7.6-v0.8.3]: https://github.com/Allifreyr/warpbox/compare/v0.7.5-v0.8.2...v0.7.6-v0.8.3
