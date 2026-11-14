@@ -54,9 +54,8 @@ type Server struct {
 	store  *metadata.Store
 	torBox *torbox.Client
 	queue  *throttle.Queue
-	// syncQueue is the metadata sync worker's throttle queue. It shares a
-	// limiter with s.queue. Stats are aggregated across both for the landing
-	// page and stats recorder.
+	// syncQueue supplies legacy operation-statistics aggregation when APIStats
+	// is not wired. Production uses shared HTTP-attempt counters instead.
 	syncQueue  *throttle.Queue
 	root       string
 	mux        *chi.Mux
@@ -118,6 +117,8 @@ const webdavRoot = "/webdav"
 
 // Config holds the server-specific configuration.
 type Config struct {
+	// APIStats reports shared HTTP-attempt counters. Nil retains legacy queue statistics.
+	APIStats            func() throttle.Stats
 	DerivedView         DerivedView
 	ListenAddr          string
 	CDNTtlMinutes       int    // How long to cache CDN URLs (0 = disable)
@@ -851,19 +852,20 @@ func (s *Server) SetSyncStatus(fn SyncStatusFunc) {
 	s.syncStatus = fn
 }
 
-// SetSyncQueue wires the metadata sync worker's throttle queue so the landing
-// page and stats recorder aggregate API-call counters across playback
-// (requestdl) and sync. Both queues share one limiter in production.
+// SetSyncQueue wires legacy operation counters for callers without APIStats.
 func (s *Server) SetSyncQueue(q *throttle.Queue) {
 	s.syncQueue = q
 }
 
-// throttleStats aggregates API-call counters across the playback queue and
-// (if wired) the metadata sync queue.
+// throttleStats prefers shared HTTP-attempt counters. Without a provider it
+// retains legacy aggregation across playback and metadata-sync operations.
 //
 // HTTP429Calls is not summed: 429s are counted on the shared limiter, so
 // both queues report the same value. Summing would double-count.
 func (s *Server) throttleStats() throttle.Stats {
+	if s.cfg.APIStats != nil {
+		return s.cfg.APIStats()
+	}
 	total := s.queue.Stats()
 	if s.syncQueue != nil {
 		sync := s.syncQueue.Stats()

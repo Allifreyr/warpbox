@@ -89,11 +89,13 @@ cache:
 
 throttle:
   # Maximum sustained TorBox API requests per minute.
-  # This is a COLLECTIVE cap across metadata sync and playback (CDN-URL
-  # requestdl) — both run on separate queues that share one rate budget, so
-  # a slow sync cannot starve playback while still respecting the overall
-  # limit. The free TorBox plan allows 300 RPM. Setting this higher will result
-  # in 429 errors. Must be 10–1000.
+  # One COLLECTIVE budget covers each HTTP attempt: every sync page, retry,
+  # redirect hop, single-item fetch, playback requestdl, and startup account request.
+  # Sync and playback retain separate serial queues; pacing happens at the
+  # TorBox client so a whole paginated sync cannot consume only one slot.
+  # CDN media transfers and TMDB/GitHub metadata use separate clients.
+  # Keep headroom below TorBox's API limit, including other apps using your
+  # key: this budget covers one Warpbox process. Must be 10–1000.
   # Default: 250
   requests_per_minute: 250
 

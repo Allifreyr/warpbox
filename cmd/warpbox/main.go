@@ -114,15 +114,15 @@ func main() {
 	}
 	defer metadataStore.Close()
 
-	// One shared limiter paces the start of every TorBox API call across both
-	// queues, so requests_per_minute is a collective cap (metadata sync +
-	// playback requestdl), not a per-queue limit.
+	// Admit individual TorBox HTTP attempts, including pagination, retries and
+	// startup requests. Queues only serialize work; they must not charge twice.
 	limiter := throttle.NewLimiter(cfg.Throttle.RequestsPerMinute)
-	requestQueue := throttle.NewQueueWithLimiter(cfg.Throttle.RequestsPerMinute, limiter)
-	syncQueue := throttle.NewQueueWithLimiter(cfg.Throttle.RequestsPerMinute, limiter)
+	requestQueue := throttle.NewExecutionQueue(cfg.Throttle.RequestsPerMinute, limiter)
+	syncQueue := throttle.NewExecutionQueue(cfg.Throttle.RequestsPerMinute, limiter)
 
 	torBoxClient := torbox.NewClient(cfg.TorBox.APIKey)
 	torBoxClient.SetTimeout(time.Duration(cfg.TorBox.RequestTimeoutSeconds) * time.Second)
+	torBoxClient.SetRequestHooks(limiter.BeginRequest, limiter.EndRequest)
 	torBoxClient.HTTP429Callback = limiter.Record429
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -196,6 +196,7 @@ func main() {
 
 	// Wire the LevelVar into the server config for runtime log level toggle.
 	serverCfg := server.Config{
+		APIStats:                 limiter.RequestStats,
 		ListenAddr:               cfg.Server.ListenAddr,
 		CDNTtlMinutes:            cfg.Cache.CDNURLTTLMinutes,
 		CDNURLAutoRepair:         *cfg.Cache.CDNURLAutoRepair,

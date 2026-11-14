@@ -31,7 +31,8 @@ Plex/Jellyfin → rclone (FUSE mount) → WebDAV → Warpbox → TorBox API
 
 ## Network & Rate Limiting
 
-- Two blocking queues (metadata sync and playback `requestdl`) share a single rate limiter. The proxy absorbs burst traffic from Plex and drip-feeds TorBox collectively below the 300 requests/minute limit, without letting a slow sync hold up playback.
+- Metadata sync and playback `requestdl` run on separate serial execution queues. The common TorBox HTTP method obtains one slot from the shared limiter per attempt, including every pagination page, retry, redirect hop, single-item fetch, and startup account request. A request-local transport wrapper admits redirect hops while preserving the HTTP client's policy and timeout. Production queues do not obtain an additional slot. Limiter synchronization is released before network I/O, preserving playback progress during a slow sync response.
+- Shared HTTP-attempt counters supply the dashboard and stats recorder; operation counters remain internal to queues. Cancelled admission records no attempt, and each HTTP 429 increments one shared counter. Existing metric names and SQLite history are retained. CDN media traffic and TMDB/GitHub metadata do not use the TorBox budget.
 
 ## Documentation Structure
 

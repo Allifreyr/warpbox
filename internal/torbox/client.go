@@ -64,6 +64,17 @@ type Client struct {
 	apiKey          string
 	httpClient      *http.Client
 	HTTP429Callback func() // Called when a 429 response is received
+	beforeRequest   func(context.Context) error
+	afterRequest    func(error)
+}
+
+// SetRequestHooks configures shared admission and HTTP-attempt accounting.
+// Configure before using the client concurrently. A rejected admission has no
+// matching after call; every admitted attempt has exactly one, including errors
+// and redirect hops. A followed redirect completes successfully before admission
+// of its next hop; the final attempt includes response-body handling.
+func (c *Client) SetRequestHooks(before func(context.Context) error, after func(error)) {
+	c.beforeRequest, c.afterRequest = before, after
 }
 
 // SetBaseURL overrides the API base URL. Used by tests to redirect traffic
@@ -569,10 +580,69 @@ func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 // internal helpers
 // ---------------------------------------------------------------------------
 
+type requestTransport func(*http.Request) (*http.Response, error)
+
+func (f requestTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
 // do executes an HTTP request, reads the full body, and returns the body bytes.
 // The response body is always closed before returning.
-func (c *Client) do(req *http.Request) ([]byte, error) {
-	resp, err := c.httpClient.Do(req)
+func (c *Client) do(req *http.Request) (result []byte, resultErr error) {
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+	if c.beforeRequest != nil {
+		if err := c.beforeRequest(req.Context()); err != nil {
+			return nil, err
+		}
+	}
+	finishAttempt := c.afterRequest
+	defer func() {
+		if finishAttempt != nil {
+			finishAttempt(resultErr)
+		}
+	}()
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+	// Wrap a copy so every redirect hop passes through admission without
+	// changing the supplied client's redirect policy, timeout, or transport.
+	// The first attempt was admitted above, outside the HTTP timeout as before.
+	hc := *c.httpClient
+	transport := hc.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	first := true
+	hc.Transport = requestTransport(func(hop *http.Request) (*http.Response, error) {
+		// http.Client follows redirects serially. Reaching another RoundTrip
+		// completes the previous redirect, whose body it has already closed.
+		if !first {
+			if finishAttempt != nil {
+				finishAttempt(nil)
+				finishAttempt = nil
+			}
+			if err := hop.Context().Err(); err != nil {
+				return nil, err
+			}
+			if c.beforeRequest != nil {
+				if err := c.beforeRequest(hop.Context()); err != nil {
+					return nil, err
+				}
+			}
+			finishAttempt = c.afterRequest
+		}
+		first = false
+		if err := hop.Context().Err(); err != nil {
+			return nil, err
+		}
+		resp, err := transport.RoundTrip(hop)
+		// Observe the status even if reading a rate-limit body later fails.
+		if resp != nil && resp.StatusCode == http.StatusTooManyRequests && c.HTTP429Callback != nil {
+			c.HTTP429Callback()
+		}
+		return resp, err
+	})
+	resp, err := hc.Do(req)
 	if err != nil {
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
@@ -585,12 +655,6 @@ func (c *Client) do(req *http.Request) ([]byte, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("torbox: reading response: %w", err)
-	}
-
-	if resp.StatusCode == http.StatusTooManyRequests {
-		if c.HTTP429Callback != nil {
-			c.HTTP429Callback()
-		}
 	}
 
 	if resp.StatusCode != http.StatusOK {

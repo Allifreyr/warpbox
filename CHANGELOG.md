@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Apply `throttle.requests_per_minute` to each TorBox HTTP attempt, including all torrent/Usenet sync pages, page retries, redirect hops, single-item fetches, playback download-link requests, and startup account information. Separate sync/playback execution queues remain in place without charging an extra rate-limit slot. Cancellation while awaiting admission sends no request.
+- Dashboard API-call totals, last-minute counts, and success/failure charts now count individual HTTP attempts instead of whole queued operations. Shared 429 responses are counted once, including responses whose body cannot be read. Existing metric names and historical statistics remain unchanged.
+
 ## [v0.7.6-v0.8.6] - 2026-11-09
 
 ### Added

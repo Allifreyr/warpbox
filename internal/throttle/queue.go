@@ -1,4 +1,4 @@
-// Package throttle implements a blocking request queue with a token-bucket rate limiter.
+// Package throttle implements serial execution queues and a shared request pacer.
 //
 // Warpbox never fails fast. Burst traffic from Plex is queued and trickled
 // to the TorBox API at a safe rate below 300 requests per minute.
@@ -25,10 +25,14 @@ type Request struct {
 // queue still runs its own processLoop. 429s are counted here (once, globally)
 // rather than on each queue.
 type Limiter struct {
-	mu       sync.Mutex
-	rate     time.Duration
-	lastCall time.Time
-	http429  int64
+	mu                 sync.Mutex
+	rate               time.Duration
+	lastCall           time.Time
+	http429            int64
+	totalRequests      int64
+	successfulRequests int64
+	failedRequests     int64
+	requestWindow      []time.Time
 }
 
 // NewLimiter creates a shared rate limiter that paces call starts.
@@ -41,24 +45,80 @@ func NewLimiter(requestsPerMinute int) *Limiter {
 // Wait blocks until a start slot is available, then reserves it.
 // Consecutive starts (across all queues sharing this limiter) are spaced
 // at least rate apart. Returns promptly on context cancellation.
-func (l *Limiter) Wait(ctx context.Context) {
+func (l *Limiter) Wait(ctx context.Context) error {
 	for {
 		l.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			l.mu.Unlock()
+			return err
+		}
 		now := time.Now()
 		elapsed := now.Sub(l.lastCall)
 		if elapsed >= l.rate {
 			l.lastCall = now
 			l.mu.Unlock()
-			return
+			return nil
 		}
 		wait := l.rate - elapsed
 		l.mu.Unlock()
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
-			return
-		case <-time.After(wait):
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
 		}
 	}
+}
+
+// BeginRequest admits and records one HTTP attempt. Queue-level Wait calls do
+// not affect these counters. Cancelled admission never records an attempt.
+func (l *Limiter) BeginRequest(ctx context.Context) error {
+	if err := l.Wait(ctx); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	now := time.Now()
+	l.totalRequests++
+	l.trimRequestWindow(now)
+	l.requestWindow = append(l.requestWindow, now)
+	return nil
+}
+
+// EndRequest records the result of an admitted HTTP attempt, not JSON decoding
+// or other work performed by the caller after the HTTP method returns.
+func (l *Limiter) EndRequest(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err == nil {
+		l.successfulRequests++
+	} else {
+		l.failedRequests++
+	}
+}
+
+func (l *Limiter) trimRequestWindow(now time.Time) {
+	cutoff := now.Add(-time.Minute)
+	n := 0
+	for n < len(l.requestWindow) && !l.requestWindow[n].After(cutoff) {
+		n++
+	}
+	l.requestWindow = l.requestWindow[n:]
+}
+
+// RequestStats is the shared HTTP-attempt snapshot for all production queues,
+// including API calls (such as startup account info) made outside a queue.
+func (l *Limiter) RequestStats() Stats {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.trimRequestWindow(time.Now())
+	return Stats{TotalCalls: l.totalRequests, SuccessfulCalls: l.successfulRequests,
+		FailedCalls: l.failedRequests, HTTP429Calls: l.http429,
+		CallsLastMinute: len(l.requestWindow), RequestsPerMinute: int(time.Minute / l.rate)}
 }
 
 // Record429 increments the global 429 counter.
@@ -77,10 +137,11 @@ func (l *Limiter) HTTP429Calls() int64 {
 
 // Queue is a rate-limited, blocking queue for TorBox API requests.
 type Queue struct {
-	mu      sync.Mutex
-	items   chan Request
-	limiter *Limiter
-	rate    time.Duration
+	mu            sync.Mutex
+	items         chan Request
+	limiter       *Limiter
+	rate          time.Duration
+	executionOnly bool
 
 	totalCalls      int64
 	callWindow      []time.Time
@@ -116,6 +177,15 @@ func NewQueueWithLimiter(requestsPerMinute int, shared *Limiter) *Queue {
 		limiter: shared,
 		rate:    time.Minute / time.Duration(requestsPerMinute),
 	}
+}
+
+// NewExecutionQueue serializes operations without charging a rate-limit slot.
+// Use it when the operation's HTTP client admits each request itself, including
+// every page and retry. Legacy queue constructors retain their paced behavior.
+func NewExecutionQueue(requestsPerMinute int, shared *Limiter) *Queue {
+	q := NewQueueWithLimiter(requestsPerMinute, shared)
+	q.executionOnly = true
+	return q
 }
 
 // Stats returns current throttle statistics.
@@ -185,8 +255,11 @@ func (q *Queue) processLoop(ctx context.Context) {
 				callCtx, cancel = context.WithCancel(r.Context)
 				stop = context.AfterFunc(ctx, cancel)
 			}
-			q.limiter.Wait(callCtx)
-			if callCtx.Err() != nil {
+			var waitErr error
+			if !q.executionOnly {
+				waitErr = q.limiter.Wait(callCtx)
+			}
+			if waitErr != nil || callCtx.Err() != nil {
 				stop()
 				cancel()
 				if ctx.Err() != nil {

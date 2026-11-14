@@ -11,7 +11,7 @@ simultaneous streams. The suggestions below are starting points, not rules.
 
 | Key | Default | Range | Consider changing when... |
 |-----|---------|-------|--------------------------|
-| `throttle.requests_per_minute` | 250 | 10–1000 | You want more headroom below TorBox's 300 RPM limit, or you need faster sync throughput. This caps the **combined** metadata-sync + playback rate (shared limiter), not a per-consumer limit. |
+| `throttle.requests_per_minute` | 250 | 10–1000 | Set the **combined TorBox HTTP-attempt rate** for one Warpbox process, including every sync page, retry, single-item fetch, playback link request, and startup account request. Leave headroom for other apps using the same API key. |
 | `cache.max_cdn_connections` | 4 | 1–64 | Multiple simultaneous streams compete for CDN slots |
 | `cache.cdn_proxy_timeout_seconds` | 30 | 5–600 | CDN byte-range proxy hangs or times out too early |
 | `cache.cdn_url_429_backoff_seconds` | 30 | 1–300 | TorBox 429s during requestdl need more/less breathing room |
@@ -41,6 +41,31 @@ simultaneous streams. The suggestions below are starting points, not rules.
 | `library.hook_timeout_seconds` | 30 | 1–3600 | Your on-* hook scripts take longer than 30 seconds |
 
 ## Key Interactions
+
+### Shared TorBox request budget
+
+Separate serial queues handle sync and playback. Each outgoing TorBox API
+attempt obtains one slot at the shared client boundary, including pagination
+and retries inside a queued operation, plus every followed API redirect hop.
+Queue execution itself does not consume
+another slot. A slow sync response does not hold the limiter, so playback can
+proceed when shared rate capacity is available. Cancellation while waiting
+prevents the request from being sent.
+
+Dashboard API counters and the existing `api_calls_success`, `api_calls_failed`,
+and `api_calls_429` metrics count HTTP attempts rather than queued operations.
+Total calls and calls in the last minute count starts; success/failure counts
+update after HTTP status and response-body handling. A followed redirect counts
+as a successful attempt before admission of its next hop; the final attempt
+includes any HTTP, transport, or body-read failure. Later JSON decoding or
+application-level validation does not reclassify the HTTP result. Cancelled
+admission is not counted; a 429 response is counted once, even if its body read
+fails. Historical chart points remain unchanged.
+
+Directory browsing and cached lookups do not consume this budget. CDN media
+transfers and cached Anime metadata resolution keep their existing behavior;
+TMDB and GitHub requests have their own client and pacing. The configured cap
+does not coordinate separate Warpbox instances or other TorBox applications.
 
 ### CDN connections and rclone transfers
 
